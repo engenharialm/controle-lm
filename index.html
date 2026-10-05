@@ -361,6 +361,7 @@
         <span class="status-dot"></span>
         <span id="conn-text">Modo local (este navegador)</span>
       </div>
+      <button class="btn btn-ghost btn-sm" id="btn-undo" style="display:none;">↶ Desfazer</button>
       <button class="btn btn-ghost btn-sm" id="btn-export">Exportar Excel</button>
       <input type="file" id="file-input" accept=".xlsx,.xls,.csv" style="display:none;">
       <button class="btn btn-accent" id="btn-import">Importar planilha semanal</button>
@@ -1292,6 +1293,116 @@ function makeStore({ itemsKey, colName, obrasColName, logColName, lsKey }) {
 const Store = makeStore({ itemsKey: "colaboradores", colName: "colaboradores", obrasColName: "obras", logColName: "importacoes", lsKey: LS_KEY });
 const EquipStore = makeStore({ itemsKey: "equipamentos", colName: "equipamentos", obrasColName: "equipamentosObras", logColName: "equipamentosImportacoes", lsKey: LS_KEY_EQUIP });
 
+/* -------------------------------------------------------------------------
+   DESFAZER — pilha em memória (some ao atualizar a página). Cada gravação
+   feita pelos Stores guarda o estado anterior e registra como reverter.
+   ------------------------------------------------------------------------- */
+const UNDO_STACK = [];
+let UNDO_SUPPRESS = 0;
+
+function refreshUndoBtn() {
+  const btn = document.getElementById("btn-undo");
+  if (!btn) return;
+  const last = UNDO_STACK[UNDO_STACK.length - 1];
+  btn.style.display = last ? "" : "none";
+  if (last) btn.title = "Desfazer: " + last.label;
+}
+
+function pushUndo(label, run, reloader) {
+  if (UNDO_SUPPRESS > 0) return;
+  UNDO_STACK.push({ label, run, reloader });
+  if (UNDO_STACK.length > 30) UNDO_STACK.shift();
+  refreshUndoBtn();
+}
+
+async function doUndo() {
+  const entry = UNDO_STACK.pop();
+  refreshUndoBtn();
+  if (!entry) return;
+  try {
+    await entry.run();
+    toast(`Desfeito: ${entry.label}`);
+    await entry.reloader();
+  } catch (err) {
+    toast("Não consegui desfazer: " + err.message, true);
+  }
+}
+
+function addUndoTo(store, getItems, reloader, { semDesfazerExclusaoComFoto = false } = {}) {
+  const orig = {
+    saveItem: store.saveItem, deleteItem: store.deleteItem,
+    bulkSetObra: store.bulkSetObra, bulkSetLocal: store.bulkSetLocal,
+    renameObra: store.renameObra, deleteObraRecords: store.deleteObraRecords
+  };
+  const find = (id) => getItems().find(i => i.id === id);
+  const nomeDe = (i) => (i && (i.nome || i.tipo)) || "registro";
+  const porValorAnterior = (ids, campo) => {
+    const grupos = {};
+    ids.forEach(id => { const i = find(id); if (i) (grupos[i[campo] || ""] ||= []).push(id); });
+    return grupos;
+  };
+
+  store.saveItem = async (rec) => {
+    const prev = rec.id ? find(rec.id) : null;
+    const prevCopy = prev ? { ...prev } : null;
+    const res = await orig.saveItem(rec);
+    if (prevCopy) {
+      const mudou = Object.keys(rec).some(k => k !== "id" && JSON.stringify(rec[k]) !== JSON.stringify(prevCopy[k]));
+      if (mudou) pushUndo(`alteração em ${nomeDe(prevCopy)}`, () => orig.saveItem(prevCopy), reloader);
+    } else if (res && res.id) {
+      pushUndo(`novo registro ${nomeDe(rec)}`, () => orig.deleteItem(res.id), reloader);
+    }
+    return res;
+  };
+
+  store.deleteItem = async (id) => {
+    const prev = find(id);
+    const res = await orig.deleteItem(id);
+    if (prev && !(semDesfazerExclusaoComFoto && prev.temFoto)) {
+      const copy = { ...prev };
+      pushUndo(`exclusão de ${nomeDe(copy)}`, () => orig.saveItem(copy), reloader);
+    }
+    return res;
+  };
+
+  store.bulkSetObra = async (ids, obraName) => {
+    const grupos = porValorAnterior(ids, "obra");
+    const res = await orig.bulkSetObra(ids, obraName);
+    pushUndo(`mudança de obra de ${ids.length} pessoa(s)/item(ns) para ${obraName || "sem obra"}`, async () => {
+      for (const [obraAnt, idsAnt] of Object.entries(grupos)) await orig.bulkSetObra(idsAnt, obraAnt);
+    }, reloader);
+    return res;
+  };
+
+  store.bulkSetLocal = async (ids, localName) => {
+    const grupos = porValorAnterior(ids, "local");
+    const res = await orig.bulkSetLocal(ids, localName);
+    pushUndo(`criação da equipe "${localName}"`, async () => {
+      for (const [localAnt, idsAnt] of Object.entries(grupos)) await orig.bulkSetLocal(idsAnt, localAnt);
+    }, reloader);
+    return res;
+  };
+
+  store.renameObra = async (oldName, newName) => {
+    const res = await orig.renameObra(oldName, newName);
+    pushUndo(`renomear obra "${oldName}"`, () => orig.renameObra(newName, oldName), reloader);
+    return res;
+  };
+
+  store.deleteObraRecords = async (obraName) => {
+    const itens = getItems().filter(i => i.obra === obraName).map(i => ({ ...i }));
+    const res = await orig.deleteObraRecords(obraName);
+    pushUndo(`exclusão da obra "${obraName}" (${itens.length} registro(s))`, async () => {
+      for (const it of itens) await orig.saveItem(it);
+      await store.createEmptyObra(obraName);
+    }, reloader);
+    return res;
+  };
+}
+
+addUndoTo(Store, () => STATE.colaboradores, () => reload());
+addUndoTo(EquipStore, () => EQUIP_STATE.equipamentos, () => reloadEquip(), { semDesfazerExclusaoComFoto: true });
+
 // Fotos de equipamento ficam numa coleção/chave separada — carregadas só quando
 // o equipamento é aberto, para não pesar a lista principal.
 const LS_KEY_EQUIP_FOTOS = "consolidadoEquipamentosFotos";
@@ -1599,6 +1710,7 @@ function renderMoKanban() {
   if (!boardObras || !boardTurmas) return;
   const list = STATE.colaboradores;
   const groups = {};
+  Object.values(STATE.obras).forEach(o => { if (o.nome) groups[o.nome] ||= []; }); // obras criadas sem ninguém ainda também viram coluna
   list.forEach(w => { const k = w.obra || "SEM OBRA"; (groups[k] ||= []).push(w); });
   groups["SEM OBRA"] ||= []; // sempre existe como destino pra "soltar" uma turma sem obra atribuída
   const allKeys = Object.keys(groups);
@@ -2897,11 +3009,14 @@ document.getElementById("btn-aplicar-cruzamento").addEventListener("click", asyn
   const btn = document.getElementById("btn-aplicar-cruzamento");
   btn.disabled = true; btn.textContent = "Aplicando...";
   try {
-    for (const l of alvo) {
-      const rec = STATE.colaboradores.find(w => w.id === l.colaboradorId);
-      if (!rec) continue;
-      await Store.saveItem({ ...rec, classificacao: l.classificacao });
-    }
+    UNDO_SUPPRESS++;
+    try {
+      for (const l of alvo) {
+        const rec = STATE.colaboradores.find(w => w.id === l.colaboradorId);
+        if (!rec) continue;
+        await Store.saveItem({ ...rec, classificacao: l.classificacao });
+      }
+    } finally { UNDO_SUPPRESS--; }
     toast(`Classificação aplicada a ${alvo.length} colaborador(es).`);
     await reload();
     renderRelatorioMaoDeObra();
@@ -3527,19 +3642,22 @@ document.getElementById("btn-confirmar-import-fotos").addEventListener("click", 
     }
 
     let comFoto = 0;
-    for (const rec of pendingImportFotos.records) {
-      const id = novoEquipId();
-      await EquipStore.saveItem({
-        id, obra, tipo: rec.tipo, marca: rec.marca, modelo: rec.modelo, placa: rec.placa,
-        proprietario: rec.proprietario, operador: rec.operador, situacao: normalizeEquipSituacao(rec.situacao),
-        locacao: "", tag: "", renavam: "", chassis: "", ano: "", sieng: "", frente: "", obs: "",
-        temFoto: !!rec.mediaPath
-      });
-      if (rec.mediaPath && pendingImportFotos.zip) {
-        const dataUrl = await compressZipImage(pendingImportFotos.zip, rec.mediaPath);
-        if (dataUrl) { await setEquipFoto(id, dataUrl); comFoto++; }
+    UNDO_SUPPRESS++;
+    try {
+      for (const rec of pendingImportFotos.records) {
+        const id = novoEquipId();
+        await EquipStore.saveItem({
+          id, obra, tipo: rec.tipo, marca: rec.marca, modelo: rec.modelo, placa: rec.placa,
+          proprietario: rec.proprietario, operador: rec.operador, situacao: normalizeEquipSituacao(rec.situacao),
+          locacao: "", tag: "", renavam: "", chassis: "", ano: "", sieng: "", frente: "", obs: "",
+          temFoto: !!rec.mediaPath
+        });
+        if (rec.mediaPath && pendingImportFotos.zip) {
+          const dataUrl = await compressZipImage(pendingImportFotos.zip, rec.mediaPath);
+          if (dataUrl) { await setEquipFoto(id, dataUrl); comFoto++; }
+        }
       }
-    }
+    } finally { UNDO_SUPPRESS--; }
     await EquipStore.createEmptyObra(obra);
     await EquipStore.addImportLog({ fileName: pendingImportFotos.fileName, obras: [obra], totalRegistros: pendingImportFotos.records.length });
 
@@ -4030,6 +4148,15 @@ function toast(msg, isError) {
   wrap.appendChild(el);
   setTimeout(() => el.remove(), 5000);
 }
+
+document.getElementById("btn-undo").addEventListener("click", () => { if (requireUnlock()) doUndo(); });
+document.addEventListener("keydown", (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z" || e.shiftKey) return;
+  if (/^(INPUT|TEXTAREA|SELECT)$/.test((document.activeElement || {}).tagName || "")) return;
+  if (!UNDO_STACK.length) return;
+  e.preventDefault();
+  if (requireUnlock()) doUndo();
+});
 
 /* -------------------------------------------------------------------------
    INIT
