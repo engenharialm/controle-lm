@@ -412,6 +412,7 @@
           <span>Arraste um colaborador pra mudar a obra dele. Turmas de asfalto aparecem como um bloco único (com o encarregado em destaque) — arraste o bloco todo pra remanejar a turma inteira de uma vez.</span>
           <span style="display:flex;gap:8px;flex-shrink:0;">
             <button class="btn btn-accent btn-sm" id="btn-add-worker-quadro">+ Colaborador</button>
+            <button class="btn btn-ghost btn-sm" id="btn-gerenciar-obras-mo">Gerenciar obras</button>
             <button class="btn btn-ghost btn-sm" id="btn-montar-equipe">+ Montar equipe de asfalto</button>
           </span>
         </div>
@@ -735,6 +736,26 @@
       <button class="btn btn-ghost" data-close>Cancelar</button>
       <button class="btn btn-ghost" id="btn-delete-worker" style="display:none;margin-right:auto;color:var(--danger);">Excluir</button>
       <button class="btn btn-accent" id="btn-save-worker">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: GERENCIAR OBRAS (Mão de Obra) -->
+<div class="modal-backdrop" id="modal-obras-mo">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>Gerenciar obras (Mão de Obra)</h2>
+      <button class="modal-close" data-close>&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="obras-mo-list"></div>
+      <div style="display:flex;gap:8px;margin-top:14px;border-top:1px solid var(--border);padding-top:14px;">
+        <input type="text" id="nova-obra-mo-nome" placeholder="Nome da nova obra" style="flex:1;">
+        <button class="btn btn-accent btn-sm" id="btn-criar-obra-mo">Criar obra vazia</button>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-close>Fechar</button>
     </div>
   </div>
 </div>
@@ -3060,6 +3081,81 @@ function openEquipModal(item) {
 }
 
 document.getElementById("btn-add-equip").addEventListener("click", () => openEquipModal(null));
+
+/* -------------------------------------------------------------------------
+   MÃO DE OBRA — GERENCIAR OBRAS (renomear / criar / excluir)
+   ------------------------------------------------------------------------- */
+function renderObrasMoModal() {
+  const counts = {};
+  STATE.colaboradores.forEach(w => { if (w.obra) counts[w.obra] = (counts[w.obra] || 0) + 1; });
+  const nomes = new Set([...Object.values(STATE.obras).map(o => o.nome), ...Object.keys(counts)]);
+  const lista = [...nomes].filter(Boolean).sort((a, b) => a.localeCompare(b));
+
+  document.getElementById("obras-mo-list").innerHTML = lista.map(nome => `
+    <div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);">
+      <div style="flex:1;">
+        <strong>${escapeHtml(nome)}</strong>
+        <span style="color:var(--text-dim);font-size:.8rem;"> · ${counts[nome] || 0} colaborador(es)</span>
+      </div>
+      <button class="btn btn-ghost btn-sm" data-renomear-obra-mo="${escapeHtml(nome)}">Renomear</button>
+      <button class="btn btn-ghost btn-sm" data-excluir-obra-mo="${escapeHtml(nome)}" style="color:var(--danger);">Excluir</button>
+    </div>
+  `).join("") || `<div class="empty-state">Nenhuma obra cadastrada ainda.</div>`;
+
+  document.querySelectorAll("#obras-mo-list [data-renomear-obra-mo]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      if (!requireUnlock()) return;
+      const nomeAtual = btn.dataset.renomearObraMo;
+      const novoNome = prompt(`Novo nome para a obra "${nomeAtual}":`, nomeAtual);
+      if (!novoNome || !novoNome.trim() || novoNome.trim() === nomeAtual) return;
+      try {
+        await Store.renameObra(nomeAtual, novoNome.trim());
+        toast(`Obra renomeada para "${novoNome.trim()}".`);
+        await reload();
+        renderObrasMoModal();
+      } catch (err) {
+        toast("Erro ao renomear: " + err.message, true);
+      }
+    });
+  });
+  document.querySelectorAll("#obras-mo-list [data-excluir-obra-mo]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      if (!requireUnlock()) return;
+      const nome = btn.dataset.excluirObraMo;
+      const qtd = counts[nome] || 0;
+      if (!confirm(`Excluir a obra "${nome}"${qtd ? ` e os ${qtd} colaborador(es) cadastrados nela` : ""}? Essa ação não pode ser desfeita.${qtd ? "\n\nSe só quiser tirar a obra do quadro mantendo as pessoas, mova-as antes para outra obra." : ""}`)) return;
+      try {
+        await Store.deleteObraRecords(nome);
+        toast(`Obra "${nome}" excluída.`);
+        await reload();
+        renderObrasMoModal();
+      } catch (err) {
+        toast("Erro ao excluir: " + err.message, true);
+      }
+    });
+  });
+}
+
+document.getElementById("btn-gerenciar-obras-mo").addEventListener("click", () => {
+  renderObrasMoModal();
+  document.getElementById("modal-obras-mo").classList.add("open");
+});
+
+document.getElementById("btn-criar-obra-mo").addEventListener("click", async () => {
+  if (!requireUnlock()) return;
+  const input = document.getElementById("nova-obra-mo-nome");
+  const nome = input.value.trim();
+  if (!nome) { toast("Digite o nome da obra.", true); return; }
+  try {
+    await Store.createEmptyObra(nome);
+    input.value = "";
+    toast(`Obra "${nome}" criada.`);
+    await reload();
+    renderObrasMoModal();
+  } catch (err) {
+    toast("Erro ao criar obra: " + err.message, true);
+  }
+});
 
 /* -------------------------------------------------------------------------
    EQUIPAMENTOS — GERENCIAR OBRAS (renomear / criar / excluir)
