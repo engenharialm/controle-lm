@@ -1728,6 +1728,31 @@ function wireMoDragDrop() {
     });
     card.addEventListener("dragend", () => card.classList.remove("dragging"));
     card.addEventListener("click", () => openTurmaModal(card.dataset.turma));
+    // soltar um colaborador em cima do bloco da equipe = colocar a pessoa dentro dela
+    card.addEventListener("dragover", (e) => { e.preventDefault(); card.style.outline = "2px solid var(--accent)"; });
+    card.addEventListener("dragleave", () => { card.style.outline = ""; });
+    card.addEventListener("drop", async (e) => {
+      card.style.outline = "";
+      let payload;
+      try { payload = JSON.parse(e.dataTransfer.getData("text/plain")); } catch { return; }
+      if (!payload || payload.type !== "colaborador") return;
+      e.preventDefault();
+      e.stopPropagation();
+      document.querySelectorAll("#mo-kanban-wrap .kanban-col.drag-over").forEach(c => c.classList.remove("drag-over"));
+      if (!requireUnlock()) return;
+      const pessoa = STATE.colaboradores.find(w => w.id === payload.id);
+      const localKey = card.dataset.turma;
+      const membro = STATE.colaboradores.find(w => w.local === localKey);
+      if (!pessoa || !membro || pessoa.local === localKey) return;
+      try {
+        await Store.saveItem({ ...pessoa, local: localKey, obra: membro.obra || "" });
+        toast(`${pessoa.nome} entrou na equipe "${localKey}".`);
+        await reload();
+      } catch (err) {
+        toast("Erro ao adicionar à equipe: " + err.message, true);
+        await reload();
+      }
+    });
   });
   document.querySelectorAll("#mo-kanban-wrap .kanban-col-body").forEach(col => {
     col.addEventListener("dragover", (e) => { e.preventDefault(); col.closest(".kanban-col").classList.add("drag-over"); });
