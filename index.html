@@ -2799,6 +2799,12 @@ function parseFolhaExcel(rows) {
   return registros;
 }
 
+// Empresas do grupo LM (não contam como PJ/terceirizado): LM, LR Caçamba(s) e JR Prime.
+function isEmpresaGrupoLM(nome) {
+  const s = (nome || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return /^(LM(CONSTRUTORA.*)?|LRCACAMBAS?.*|JRPRIME.*)$/.test(s);
+}
+
 let pendingCruzamento = null;
 let pendingFolhaRegistros = null;
 let folhaObraMap = {};
@@ -2825,8 +2831,8 @@ function computeCruzamento(folhaRegistros, obraMap) {
   }
 
   function classificar(efetivoRec, folhaRec) {
-    const fornecedorPJ = (efetivoRec && efetivoRec.fornecedor && normNome(efetivoRec.fornecedor) !== "LM" && efetivoRec.fornecedor.trim() !== "")
-      || (folhaRec && folhaRec.empresa);
+    const fornecedorPJ = (efetivoRec && efetivoRec.fornecedor && efetivoRec.fornecedor.trim() !== "" && !isEmpresaGrupoLM(efetivoRec.fornecedor))
+      || (folhaRec && folhaRec.empresa && !isEmpresaGrupoLM(folhaRec.empresa));
     if (fornecedorPJ) return { classificacao: "PJ / TERCERIZADO", obs: `Empresa: ${(folhaRec && folhaRec.empresa) || (efetivoRec && efetivoRec.fornecedor) || ""}` };
     if (efetivoRec && folhaRec) {
       if (obrasMatch(efetivoRec.obra, obraFolhaResolvida(folhaRec))) return { classificacao: "FOLHA E EFETIVO", obs: "" };
