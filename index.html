@@ -3706,9 +3706,20 @@ document.getElementById("btn-save-equip").addEventListener("click", async () => 
 /* -------------------------------------------------------------------------
    IMPORTAÇÃO DE PLANILHA (.xlsx / .xls / .csv)
    ------------------------------------------------------------------------- */
+// Título da planilha tipo "OBRA - TAPIRA-MG" nas linhas acima do cabeçalho -> "TAPIRA"
+function findSheetTitleObra(rows, headerIdx) {
+  for (let i = 0; i < Math.min(headerIdx, 10); i++) {
+    for (const cell of (rows[i] || [])) {
+      const m = formatCell(cell).match(/^OBRA\s*[-–—:]\s*(.+)$/i);
+      if (m) return m[1].replace(/\s*[-–—]\s*[A-Za-z]{2}\s*$/, "").replace(/\s+/g, " ").trim().toUpperCase();
+    }
+  }
+  return "";
+}
+
 const HEADER_MAP = [
   { key: "cod",        match: h => h === "COD." || (h.includes("COD") && !h.includes("SIENG")) },
-  { key: "local",      match: h => h === "OBRA" },
+  { key: "local",      match: h => h === "OBRA" || h.includes("LOCALIZA") },
   { key: "funcao",     match: h => h.includes("FUNÇÃO") || h.includes("FUNCAO") },
   { key: "nivel",      match: h => h.includes("NÍVEL") || h.includes("NIVEL") },
   { key: "nome",       match: h => h === "NOME" || h.includes("NOME") },
@@ -3748,7 +3759,7 @@ function findEquipHeaderRow(rows) {
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i] || [];
     const norm = row.map(c => (c ?? "").toString().trim().toUpperCase());
-    const hasObra = norm.some(c => c === "OBRA");
+    const hasObra = norm.some(c => c === "OBRA") || !!findSheetTitleObra(rows, i);
     const hasTipo = norm.some(c => c.includes("TIPO"));
     const hasSituacao = norm.some(c => c.includes("SITUA"));
     if (hasObra && hasTipo && hasSituacao) return i;
@@ -3771,7 +3782,9 @@ function parseEquipSheetRows(rows) {
   const headerIdx = findEquipHeaderRow(rows);
   if (headerIdx === -1) return null;
   const colIdx = buildEquipColumnIndex(rows[headerIdx]);
-  if (colIdx.obra === undefined || colIdx.tipo === undefined) return null;
+  if (colIdx.tipo === undefined) return null;
+  const tituloObra = findSheetTitleObra(rows, headerIdx);
+  if (colIdx.obra === undefined && !tituloObra) return null;
 
   const byObra = {};
   let currentObra = "";
@@ -3789,14 +3802,16 @@ function parseEquipSheetRows(rows) {
 
     if (!obraVal && !tipoVal) {
       // cabeçalho de seção = nome da obra (fica no primeiro campo mapeado preenchido)
-      const anyVal = fieldKeys.map(k => get(k)).find(v => v);
-      if (anyVal) currentObra = anyVal;
+      if (colIdx.obra !== undefined) {
+        const anyVal = fieldKeys.map(k => get(k)).find(v => v);
+        if (anyVal) currentObra = anyVal;
+      }
       continue;
     }
 
     if (!tipoVal) continue; // sem tipo não é um equipamento válido
 
-    const obra = obraVal || currentObra || "SEM OBRA";
+    const obra = obraVal || currentObra || tituloObra || "SEM OBRA";
     if (!byObra[obra]) byObra[obra] = [];
     byObra[obra].push({
       obra, tipo: tipoVal, operador: get("operador"), marca: get("marca"), modelo: get("modelo"),
@@ -3860,6 +3875,7 @@ function parseSheetRows(rows) {
   const byObra = {};
   let currentObra = "";
   let anySection = false;
+  const tituloObra = findSheetTitleObra(rows, headerIdx);
 
   for (let i = headerIdx + 1; i < rows.length; i++) {
     const row = rows[i] || [];
@@ -3888,7 +3904,7 @@ function parseSheetRows(rows) {
       if (CLASSIF_LABELS.includes(val)) { classificacao = val; break; }
     }
 
-    const obra = currentObra || local || "SEM OBRA";
+    const obra = currentObra || local || tituloObra || "SEM OBRA";
     if (!byObra[obra]) byObra[obra] = [];
     const admissaoRaw = colIdx.admissao !== undefined ? row[colIdx.admissao] : "";
     byObra[obra].push({
