@@ -3447,10 +3447,13 @@ async function parseEquipWorkbookComFotos(file) {
   const workbookXml = await zip.file("xl/workbook.xml").async("string");
   const firstSheetRid = (workbookXml.match(/<sheet[^>]*r:id="([^"]+)"/) || [])[1];
   const wbRelsXml = await zip.file("xl/_rels/workbook.xml.rels").async("string");
-  const relMatch = [...wbRelsXml.matchAll(/<Relationship Id="([^"]+)"[^>]*Target="([^"]+)"/g)]
-    .find(m => m[1] === firstSheetRid);
-  if (!relMatch) throw new Error("Não consegui localizar a planilha dentro do arquivo.");
-  const sheetPath = "xl/" + relMatch[2].replace(/^\.?\/?/, "");
+  // atributos podem vir em qualquer ordem e o destino pode ser absoluto ("/xl/...") ou relativo
+  const resolveZipTarget = (t) => t.startsWith("/") ? t.slice(1) : "xl/" + t.replace(/^(\.\.\/)+/, "").replace(/^\.\//, "");
+  const relTag = [...wbRelsXml.matchAll(/<Relationship\b[^>]*>/g)].map(m => m[0])
+    .find(tag => (tag.match(/\bId="([^"]+)"/) || [])[1] === firstSheetRid);
+  const relTarget = relTag && (relTag.match(/\bTarget="([^"]+)"/) || [])[1];
+  if (!relTarget) throw new Error("Não consegui localizar a planilha dentro do arquivo.");
+  const sheetPath = resolveZipTarget(relTarget);
   const sheetFile = zip.file(sheetPath);
   if (!sheetFile) throw new Error("Não consegui abrir a aba da planilha.");
   const sheetXml = await sheetFile.async("string");
@@ -3468,13 +3471,26 @@ async function parseEquipWorkbookComFotos(file) {
   const rowMatches = [...sheetXml.matchAll(/<row r="(\d+)"[^>]*>([\s\S]*?)<\/row>/g)];
   if (!rowMatches.length) return { records: [], zip: null };
 
+  const decodeXml = (s) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&");
   function cellsOf(rowXml) {
-    return [...rowXml.matchAll(/<c r="([A-Z]+)\d+"([^>]*)>(?:<v>([\s\S]*?)<\/v>)?<\/c>/g)]
-      .map(m => ({ col: m[1], attrs: m[2], v: m[3] }));
+    // aceita células com valor (<v>), texto embutido (<is>, usado por alguns geradores) e ignora as vazias (<c .../>)
+    return [...rowXml.matchAll(/<c r="([A-Z]+)\d+"([^>]*?)(\/>|>([\s\S]*?)<\/c>)/g)]
+      .filter(m => m[3] !== "/>")
+      .map(m => {
+        const inner = m[4] || "";
+        const inl = inner.match(/<is>([\s\S]*?)<\/is>/);
+        return {
+          col: m[1], attrs: m[2],
+          v: (inner.match(/<v>([\s\S]*?)<\/v>/) || [])[1],
+          inl: inl ? [...inl[1].matchAll(/<t[^>]*>([\s\S]*?)<\/t>/g)].map(t => t[1]).join("") : undefined
+        };
+      });
   }
   function cellText(c) {
-    if (!c || c.v === undefined) return "";
-    return /t="s"/.test(c.attrs) ? (shared[parseInt(c.v, 10)] || "") : c.v;
+    if (!c) return "";
+    if (c.inl !== undefined) return decodeXml(c.inl);
+    if (c.v === undefined) return "";
+    return decodeXml(/t="s"/.test(c.attrs) ? (shared[parseInt(c.v, 10)] || "") : c.v);
   }
   function cellVm(c) {
     if (!c) return null;
@@ -3524,7 +3540,7 @@ async function parseEquipWorkbookComFotos(file) {
     const sheetRels = zip.file(sheetRelsPath) ? await zip.file(sheetRelsPath).async("string") : "";
     const drawingTarget = (sheetRels.match(/Target="([^"]*drawings\/[^"]+\.xml)"/) || [])[1];
     if (drawingTarget && colFoto) {
-      const drawingPath = "xl/" + drawingTarget.replace(/^(\.\.\/)+/, "").replace(/^\//, "");
+      const drawingPath = resolveZipTarget(drawingTarget);
       const drawingXml = await zip.file(drawingPath).async("string");
       const drawingRelsPath = drawingPath.replace(/([^/]+)$/, "_rels/$1.rels");
       const drawingRels = await zip.file(drawingRelsPath).async("string");
