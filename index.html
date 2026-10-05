@@ -3507,6 +3507,10 @@ async function parseEquipWorkbookComFotos(file) {
   const colFoto = findCol("FOTO");
   const colLocacao = Object.entries(headerMap).find(([, t]) => t.includes("LOCA") && !t.includes("VALOR") && !t.includes("LOCADOR"))?.[0] || null;
   const colValor = Object.entries(headerMap).find(([, t]) => t.includes("VALOR"))?.[0] || null;
+  const colHorimetro = findCol("HORIMETRO ATU", "HORÍMETRO ATU");
+  const colMotivo = findCol("MOTIVO", "O QUE", "FAZER");
+  const colPrevisao = findCol("PREVIS", "PRAZO");
+  const colStatusMec = findCol("MECÂNICA", "MECANICA", "OFICINA");
   const colTag = findCol("TAG", "PATRIM");
   const colRenavam = findCol("RENAVAM");
   const colChassis = findCol("CHASSIS");
@@ -3559,6 +3563,8 @@ async function parseEquipWorkbookComFotos(file) {
       operador: cellText(byCol[colOperador]).trim(),
       locacao: normalizeEquipLocacao(cellText(byCol[colLocacao]), cellText(byCol[colFornecedor])),
       valor: cellText(byCol[colValor]).trim(),
+      horimetroAtual: cellText(byCol[colHorimetro]).trim(), motivoManutencao: cellText(byCol[colMotivo]).trim(),
+      previsaoDevolucao: cellText(byCol[colPrevisao]).trim(), statusMecanica: cellText(byCol[colStatusMec]).trim(),
       tag: cellText(byCol[colTag]).trim(), renavam: cellText(byCol[colRenavam]).trim(),
       chassis: cellText(byCol[colChassis]).trim(), ano: (cellText(byCol[colAno]).trim().match(/^(19|20)\d{2}$/) || [""])[0],
       situacao: normalizeEquipSituacao(cellText(byCol[colSituacao])),
@@ -3677,6 +3683,8 @@ document.getElementById("btn-confirmar-import-fotos").addEventListener("click", 
           id, obra, tipo: rec.tipo, marca: rec.marca, modelo: rec.modelo, placa: rec.placa,
           proprietario: rec.proprietario, operador: rec.operador, situacao: normalizeEquipSituacao(rec.situacao),
           locacao: rec.locacao || "", valor: rec.valor || "", tag: rec.tag || "", renavam: rec.renavam || "", chassis: rec.chassis || "", ano: rec.ano || "", sieng: "", frente: "", obs: "",
+          horimetroAtual: rec.horimetroAtual || "", motivoManutencao: rec.motivoManutencao || "",
+          previsaoDevolucao: rec.previsaoDevolucao || "", statusMecanica: rec.statusMecanica || "",
           temFoto: !!rec.mediaPath
         });
         if (rec.mediaPath && pendingImportFotos.zip) {
@@ -3773,10 +3781,11 @@ const EQUIP_HEADER_MAP = [
   { key: "ano",          match: h => h.includes("ANO") },
   { key: "placa",        match: h => h.includes("PLACA") },
   { key: "situacao",     match: h => h.includes("SITUA") },
-  { key: "horimetroAtual", match: h => h.includes("HORÍMETRO ATUAL") || h.includes("HORIMETRO ATUAL") },
+  { key: "horimetroAtual", match: h => h.includes("HORÍMETRO ATU") || h.includes("HORIMETRO ATU") },
   { key: "horimetroManutencao", match: h => h.includes("HORÍMETRO MANUTEN") || h.includes("HORIMETRO MANUTEN") },
-  { key: "motivoManutencao", match: h => h.includes("MOTIVO") },
-  { key: "previsaoDevolucao", match: h => h.includes("PREVIS") },
+  { key: "motivoManutencao", match: h => h.includes("MOTIVO") || h.includes("O QUE") || h.includes("FAZER") || h.includes("SERVIÇO A") || h.includes("SERVICO A") },
+  { key: "previsaoDevolucao", match: h => h.includes("PREVIS") || h.includes("PRAZO") },
+  { key: "statusMecanica", match: h => h.includes("MECÂNICA") || h.includes("MECANICA") || h.includes("OFICINA") },
   { key: "sieng",        match: h => h.includes("SIENG") },
   { key: "frente",       match: h => h.includes("FRENTE") },
   { key: "obs",          match: h => h.includes("OBSERVA") || h === "OBS." },
@@ -3847,7 +3856,8 @@ function parseEquipSheetRows(rows) {
       placa: get("placa"), situacao: normalizeEquipSituacao(get("situacao")), sieng: get("sieng"),
       frente: get("frente"), obs: get("obs"),
       horimetroAtual: get("horimetroAtual"), horimetroManutencao: get("horimetroManutencao"),
-      motivoManutencao: get("motivoManutencao"), previsaoDevolucao: get("previsaoDevolucao")
+      motivoManutencao: get("motivoManutencao"), previsaoDevolucao: get("previsaoDevolucao"),
+      statusMecanica: get("statusMecanica")
     });
   }
 
