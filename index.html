@@ -410,7 +410,10 @@
       <div id="mo-kanban-wrap">
         <div style="padding:14px 28px 0;font-size:13px;color:var(--text-dim);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
           <span>Arraste um colaborador pra mudar a obra dele. Turmas de asfalto aparecem como um bloco único (com o encarregado em destaque) — arraste o bloco todo pra remanejar a turma inteira de uma vez.</span>
-          <button class="btn btn-ghost btn-sm" id="btn-montar-equipe" style="flex-shrink:0;">+ Montar equipe de asfalto</button>
+          <span style="display:flex;gap:8px;flex-shrink:0;">
+            <button class="btn btn-accent btn-sm" id="btn-add-worker-quadro">+ Colaborador</button>
+            <button class="btn btn-ghost btn-sm" id="btn-montar-equipe">+ Montar equipe de asfalto</button>
+          </span>
         </div>
         <div id="mo-equipe-bar" style="display:none;align-items:center;gap:14px;padding:10px 28px;margin:10px 28px 0;background:var(--accent-dim);border-radius:8px;">
           <strong id="mo-equipe-count" style="color:var(--accent);">0 selecionado(s)</strong>
@@ -730,6 +733,7 @@
     </div>
     <div class="modal-foot">
       <button class="btn btn-ghost" data-close>Cancelar</button>
+      <button class="btn btn-ghost" id="btn-delete-worker" style="display:none;margin-right:auto;color:var(--danger);">Excluir</button>
       <button class="btn btn-accent" id="btn-save-worker">Salvar</button>
     </div>
   </div>
@@ -1635,6 +1639,32 @@ function renderMoKanban() {
   wireMoDragDrop();
 }
 
+function turmaRowActions(id) {
+  return `<button class="icon-btn" title="Editar" data-turma-edit="${id}">✎</button>
+    <button class="icon-btn" title="Tirar da equipe" data-turma-out="${id}" style="width:auto;padding:0 8px;font-size:.7rem;">Tirar da equipe</button>
+    <button class="icon-btn del" title="Excluir" data-turma-del="${id}">✕</button>`;
+}
+
+document.getElementById("turma-modal-body").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-turma-edit],[data-turma-out],[data-turma-del]");
+  if (!btn) return;
+  const id = btn.dataset.turmaEdit || btn.dataset.turmaOut || btn.dataset.turmaDel;
+  const w = STATE.colaboradores.find(c => c.id === id);
+  if (!w) return;
+  if (btn.dataset.turmaEdit) { closeModals(); openWorkerModal(w); return; }
+  if (!requireUnlock()) return;
+  if (btn.dataset.turmaOut) {
+    await Store.saveItem({ ...w, local: "" });
+    toast(`${w.nome} saiu da equipe.`);
+  } else {
+    if (!confirm(`Excluir ${w.nome} do consolidado?`)) return;
+    await Store.deleteItem(id);
+    toast("Colaborador removido.");
+  }
+  closeModals();
+  await reload();
+});
+
 function openTurmaModal(localKey) {
   const membros = STATE.colaboradores.filter(w => w.local === localKey).sort((a, b) => a.nome.localeCompare(b.nome));
   const encarregado = membros.find(w => (w.funcao || "").toUpperCase().includes("ENCARREGADO"));
@@ -1643,9 +1673,9 @@ function openTurmaModal(localKey) {
   document.getElementById("turma-modal-title").textContent = localKey;
   document.getElementById("turma-modal-body").innerHTML = `
     <div style="font-size:12px;color:var(--text-dim);margin-bottom:10px;">Obra atual: <strong>${escapeHtml(obraAtual)}</strong></div>
-    ${encarregado ? `<div style="padding:10px 12px;border-radius:8px;background:var(--accent-dim);margin-bottom:10px;"><strong>${escapeHtml(encarregado.nome)}</strong><div style="font-size:12px;color:var(--text-dim);">Encarregado · ${escapeHtml(encarregado.funcao || "")}</div></div>` : ""}
+    ${encarregado ? `<div style="padding:10px 12px;border-radius:8px;background:var(--accent-dim);margin-bottom:10px;display:flex;align-items:center;gap:8px;"><div style="flex:1;"><strong>${escapeHtml(encarregado.nome)}</strong><div style="font-size:12px;color:var(--text-dim);">Encarregado · ${escapeHtml(encarregado.funcao || "")}</div></div>${turmaRowActions(encarregado.id)}</div>` : ""}
     <div style="font-size:12px;color:var(--text-dim);margin-bottom:6px;">${resto.length} pessoa(s) na equipe</div>
-    ${resto.map(w => `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;">${escapeHtml(w.nome)} <span style="color:var(--text-dim);">— ${escapeHtml(w.funcao || "—")}</span></div>`).join("") || `<div class="empty-state">Sem outros membros.</div>`}
+    ${resto.map(w => `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:13px;display:flex;align-items:center;gap:8px;"><div style="flex:1;">${escapeHtml(w.nome)} <span style="color:var(--text-dim);">— ${escapeHtml(w.funcao || "—")}</span></div>${turmaRowActions(w.id)}</div>`).join("") || `<div class="empty-state">Sem outros membros.</div>`}
   `;
   document.getElementById("modal-turma").classList.add("open");
 }
@@ -3788,10 +3818,23 @@ function openWorkerModal(worker) {
   f("w-status").value = STATUS_LABELS.includes(worker?.status) ? worker.status : "ATIVO";
   f("w-obs").value = worker?.obs || "";
   document.getElementById("modal-worker").dataset.editId = worker?.id || "";
+  document.getElementById("btn-delete-worker").style.display = worker?.id ? "" : "none";
   document.getElementById("modal-worker").classList.add("open");
 }
 
 document.getElementById("btn-add-worker").addEventListener("click", () => openWorkerModal(null));
+document.getElementById("btn-add-worker-quadro").addEventListener("click", () => openWorkerModal(null));
+
+document.getElementById("btn-delete-worker").addEventListener("click", async () => {
+  if (!requireUnlock()) return;
+  const id = document.getElementById("modal-worker").dataset.editId;
+  const nome = document.getElementById("w-nome").value.trim();
+  if (!id || !confirm(`Excluir ${nome || "este colaborador"} do consolidado?`)) return;
+  await Store.deleteItem(id);
+  closeModals();
+  toast("Colaborador removido.");
+  await reload();
+});
 
 document.getElementById("btn-save-worker").addEventListener("click", async () => {
   if (!requireUnlock()) return;
