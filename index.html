@@ -2050,8 +2050,8 @@ function equipStatusClass(situacao) {
 
 function equipPropriedadeLabel(locacao) {
   const l = (locacao || "").toUpperCase();
-  if (l.includes("PRÓPRIO") || l.includes("PROPRIO")) return "Próprio";
-  if (l.includes("LOCADO")) return "Alugado";
+  if (/PR[ÓO]PRI/.test(l)) return "Próprio";
+  if (l.includes("LOCA") || l.includes("ALUG")) return "Alugado";
   return "—";
 }
 
@@ -3413,6 +3413,17 @@ async function buildVmToMediaMap(zip) {
   return vmToMedia;
 }
 
+// Planilhas trazem "PRÓPRIA"/"LOCAÇÃO"/nome da locadora; o app guarda "PRÓPRIO" ou "LOCADO".
+// Sem a coluna (ou vazia), deduz pelo proprietário: LM = próprio, qualquer outro nome = locado.
+function normalizeEquipLocacao(raw, proprietario) {
+  const s = (raw || "").trim().toUpperCase();
+  if (/PR[ÓO]PRI/.test(s)) return "PRÓPRIO";
+  if (s && s !== "-") return "LOCADO";
+  const p = (proprietario || "").trim().toUpperCase().replace(/[.\s]/g, "");
+  if (!p || p === "-") return "";
+  return /^LM(CONSTRUTORA.*)?$/.test(p) ? "PRÓPRIO" : "LOCADO";
+}
+
 function normalizeEquipSituacao(raw) {
   const s = (raw || "").trim().toUpperCase();
   if (!s) return "EM OPERAÇÃO";
@@ -3488,6 +3499,12 @@ async function parseEquipWorkbookComFotos(file) {
   const colSituacao = findCol("SITUA");
   const colOperador = findCol("OPERADOR", "MOTORISTA");
   const colFoto = findCol("FOTO");
+  const colLocacao = Object.entries(headerMap).find(([, t]) => t.includes("LOCA") && !t.includes("VALOR") && !t.includes("LOCADOR"))?.[0] || null;
+  const colValor = Object.entries(headerMap).find(([, t]) => t.includes("VALOR"))?.[0] || null;
+  const colTag = findCol("TAG", "PATRIM");
+  const colRenavam = findCol("RENAVAM");
+  const colChassis = findCol("CHASSIS");
+  const colAno = Object.entries(headerMap).find(([, t]) => t.trim() === "ANO")?.[0] || null;
 
   // fotos "flutuantes" (formato clássico do Excel): drawing ancorado em linha/coluna da planilha
   const colIndex = (letters) => letters.split("").reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
@@ -3534,6 +3551,10 @@ async function parseEquipWorkbookComFotos(file) {
       placa: cellText(byCol[colPlaca]).trim(),
       proprietario: cellText(byCol[colFornecedor]).trim(),
       operador: cellText(byCol[colOperador]).trim(),
+      locacao: normalizeEquipLocacao(cellText(byCol[colLocacao]), cellText(byCol[colFornecedor])),
+      valor: cellText(byCol[colValor]).trim(),
+      tag: cellText(byCol[colTag]).trim(), renavam: cellText(byCol[colRenavam]).trim(),
+      chassis: cellText(byCol[colChassis]).trim(), ano: (cellText(byCol[colAno]).trim().match(/^(19|20)\d{2}$/) || [""])[0],
       situacao: normalizeEquipSituacao(cellText(byCol[colSituacao])),
       mediaPath: (vmFoto && vmToMedia[vmFoto]) || drawingPhotos[rowNum] || null
     });
@@ -3649,7 +3670,7 @@ document.getElementById("btn-confirmar-import-fotos").addEventListener("click", 
         await EquipStore.saveItem({
           id, obra, tipo: rec.tipo, marca: rec.marca, modelo: rec.modelo, placa: rec.placa,
           proprietario: rec.proprietario, operador: rec.operador, situacao: normalizeEquipSituacao(rec.situacao),
-          locacao: "", tag: "", renavam: "", chassis: "", ano: "", sieng: "", frente: "", obs: "",
+          locacao: rec.locacao || "", valor: rec.valor || "", tag: rec.tag || "", renavam: rec.renavam || "", chassis: rec.chassis || "", ano: rec.ano || "", sieng: "", frente: "", obs: "",
           temFoto: !!rec.mediaPath
         });
         if (rec.mediaPath && pendingImportFotos.zip) {
@@ -3739,7 +3760,7 @@ const EQUIP_HEADER_MAP = [
   { key: "modelo",       match: h => h.includes("MODELO") },
   { key: "proprietario", match: h => h.includes("PROPRIET") || h.includes("LOCADOR") },
   { key: "locacao",      match: h => h.trim() === "LOCAÇÃO" || h.trim() === "LOCACAO" },
-  { key: "valor",        match: h => h === "VALOR" },
+  { key: "valor",        match: h => h === "VALOR" || h.includes("VALOR DE LOC") },
   { key: "tag",          match: h => h.includes("TAG") || h.includes("PATRIM") },
   { key: "renavam",      match: h => h.includes("RENAVAM") },
   { key: "chassis",      match: h => h.includes("CHASSIS") },
@@ -3815,8 +3836,8 @@ function parseEquipSheetRows(rows) {
     if (!byObra[obra]) byObra[obra] = [];
     byObra[obra].push({
       obra, tipo: tipoVal, operador: get("operador"), marca: get("marca"), modelo: get("modelo"),
-      proprietario: get("proprietario"), locacao: get("locacao"), valor: get("valor"),
-      tag: get("tag"), renavam: get("renavam"), chassis: get("chassis"), ano: get("ano"),
+      proprietario: get("proprietario"), locacao: normalizeEquipLocacao(get("locacao"), get("proprietario")), valor: get("valor"),
+      tag: get("tag"), renavam: get("renavam"), chassis: get("chassis"), ano: (get("ano").match(/^(19|20)\d{2}$/) || [""])[0],
       placa: get("placa"), situacao: normalizeEquipSituacao(get("situacao")), sieng: get("sieng"),
       frente: get("frente"), obs: get("obs"),
       horimetroAtual: get("horimetroAtual"), horimetroManutencao: get("horimetroManutencao"),
