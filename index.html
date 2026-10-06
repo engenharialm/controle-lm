@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
 <style>
   :root{
     /* Identidade visual LM Construtora (baseada no papel timbrado) */
@@ -2416,10 +2417,177 @@ function renderEquipRelatorio() {
     .join("") || `<tr><td colspan="2" class="empty-state">Sem dados ainda.</td></tr>`;
 }
 
-document.getElementById("btn-export-relatorio").addEventListener("click", () => {
+document.getElementById("btn-export-relatorio").addEventListener("click", async () => {
   if (!requireUnlock()) return;
-  exportEquipamentosExcel();
+  const btn = document.getElementById("btn-export-relatorio");
+  btn.disabled = true;
+  try {
+    await exportRelatorioEquipamentosExcel();
+  } catch (err) {
+    console.error(err);
+    toast("Erro ao gerar o Excel do relatório: " + err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
 });
+
+// Excel do relatório de equipamentos, com o mesmo layout do PDF (cabeçalho, grupos por obra, totais e resumo por tipo).
+async function exportRelatorioEquipamentosExcel() {
+  if (typeof ExcelJS === "undefined") throw new Error("Biblioteca de Excel não carregou. Verifique a internet e recarregue a página.");
+  const { total, proprios, locados, contagem, obras, tipos, pct, proprioLabel } = buildEquipRelatorioData();
+  const argb = hex => "FF" + hex;
+  const solid = hex => ({ type: "solid", pattern: "solid", fgColor: { argb: argb(hex) } });
+  const thin = { style: "thin", color: { argb: "FF999999" } };
+  const cellBorder = { top: thin, left: thin, bottom: thin, right: thin };
+  const NCOL = 7;
+
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Efetivo de Equipamentos", {
+    views: [{ state: "frozen", ySplit: 5 }],
+    pageSetup: { paperSize: 9, orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.4, right: 0.4, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } }
+  });
+  [16, 26, 30, 18, 20, 14, 22].forEach((w, i) => { ws.getColumn(i + 1).width = w; });
+
+  const mergeRow = (r) => ws.mergeCells(r, 1, r, NCOL);
+  const hoje = new Date().toLocaleDateString("pt-BR");
+
+  // bloco de cabeçalho (linhas 1–4), com borda externa como no PDF
+  ws.getRow(1).height = 46;
+  mergeRow(1);
+  ws.getCell(1, 1).value = "EFETIVO DE EQUIPAMENTOS LM";
+  ws.getCell(1, 1).font = { name: "Arial", size: 15, bold: true };
+  ws.getCell(1, 1).alignment = { horizontal: "center", vertical: "middle" };
+  mergeRow(2);
+  ws.getCell(2, 1).value = `Gerado em ${hoje}`;
+  ws.getCell(2, 1).font = { name: "Arial", size: 9 };
+  ws.getCell(2, 1).alignment = { horizontal: "center" };
+  mergeRow(3);
+  ws.getCell(3, 1).value = `Total de equipamentos ${total}     Próprios ${proprios}     Locados ${locados}     % Próprios ${pct(proprios)}%     % Locados ${pct(locados)}%`;
+  mergeRow(4);
+  ws.getCell(4, 1).value = `Em operação ${contagem.operacao}     Disponível ${contagem.disponivel}     Requer manutenção ${contagem.requer}     Em manutenção ${contagem.manut}`;
+  [3, 4].forEach(r => { ws.getCell(r, 1).font = { name: "Arial", size: 10, bold: true }; ws.getCell(r, 1).alignment = { horizontal: "left", vertical: "middle", indent: 1 }; ws.getRow(r).height = 18; });
+  const medium = { style: "medium", color: { argb: "FF111111" } };
+  for (let r = 1; r <= 4; r++) {
+    for (let c = 1; c <= NCOL; c++) {
+      ws.getCell(r, c).border = { top: r === 1 ? medium : undefined, bottom: r === 4 ? medium : undefined, left: c === 1 ? medium : undefined, right: c === NCOL ? medium : undefined };
+    }
+  }
+
+  // logos (LM à esquerda, PDCA à direita), mantendo a proporção
+  const addLogo = async (file, col, offset, height) => {
+    try {
+      const res = await fetch(new URL(file, location.href).href);
+      if (!res.ok) return;
+      const bmp = await createImageBitmap(await res.blob());
+      const width = Math.round(height * bmp.width / bmp.height);
+      // reduz a imagem (2x o tamanho exibido) pra não deixar o Excel pesado
+      const canvas = document.createElement("canvas");
+      canvas.width = width * 2; canvas.height = height * 2;
+      canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+      const small = await new Promise(resolve => canvas.toBlob(resolve, "image/png"));
+      const id = wb.addImage({ buffer: await small.arrayBuffer(), extension: "png" });
+      ws.addImage(id, { tl: { col: col + offset, row: 0.1 }, ext: { width, height } });
+    } catch (e) { console.warn("Logo não incluído:", file, e); }
+  };
+  await addLogo("logo-lm.png", 0, 0.08, 40);
+  await addLogo("logo-pdca.png", NCOL - 1, 0.35, 40);
+
+  // cabeçalho das colunas (linha 5)
+  const headRow = ws.getRow(5);
+  ["Obra", "Tipo", "Operador", "Marca", "Modelo", "Locação", "Situação"].forEach((h, i) => {
+    const c = headRow.getCell(i + 1);
+    c.value = h.toUpperCase();
+    c.font = { name: "Arial", size: 9.5, bold: true, color: { argb: "FFFFFFFF" } };
+    c.fill = solid("0B83B2");
+    c.alignment = { horizontal: "left", vertical: "middle", indent: 0 };
+    c.border = cellBorder;
+  });
+  headRow.height = 22;
+
+  let r = 6;
+  obras.forEach(({ obra, items, proprios: pObra, locados: lObra }) => {
+    mergeRow(r);
+    const g = ws.getCell(r, 1);
+    g.value = obra;
+    g.font = { name: "Arial", size: 10, bold: true };
+    g.alignment = { horizontal: "center", vertical: "middle" };
+    for (let c = 1; c <= NCOL; c++) { ws.getCell(r, c).fill = solid("DCEEF6"); ws.getCell(r, c).border = cellBorder; }
+    r++;
+    items.forEach(w => {
+      const vals = [w.obra || "", w.tipo || "", w.operador || "", w.marca || "", w.modelo || "", proprioLabel(w), w.situacao || ""];
+      vals.forEach((v, i) => {
+        const c = ws.getCell(r, i + 1);
+        c.value = v;
+        c.font = { name: "Arial", size: 10 };
+        c.alignment = { vertical: "middle", wrapText: true };
+        c.border = cellBorder;
+      });
+      const cor = situacaoCorHex(w.situacao);
+      if (cor) ws.getCell(r, 7).font = { name: "Arial", size: 10, bold: true, color: { argb: argb(cor) } };
+      r++;
+    });
+    ws.mergeCells(r, 1, r, 2);
+    const tot = [`TOTAL ${obra}`, null, items.length, "Próprios:", pObra, "Locados:", lObra];
+    tot.forEach((v, i) => { if (v !== null) ws.getCell(r, i + 1).value = v; });
+    for (let c = 1; c <= NCOL; c++) {
+      const cell = ws.getCell(r, c);
+      cell.font = { name: "Arial", size: 10, bold: true };
+      cell.fill = solid("EDEFF2");
+      cell.border = cellBorder;
+      cell.alignment = { horizontal: c <= 2 ? "left" : "center", vertical: "middle" };
+    }
+    r++;
+  });
+
+  // resumo por tipo
+  r += 1;
+  mergeRow(r);
+  ws.getCell(r, 1).value = "Resumo por tipo de equipamento";
+  ws.getCell(r, 1).font = { name: "Arial", size: 12, bold: true };
+  r++;
+  ws.mergeCells(r, 1, r, 2);
+  ["Nome do equipamento", null, "Em operação", "Disponível", "Requer manut.", "Em manut.", "Total Geral"].forEach((h, i) => {
+    const c = ws.getCell(r, i + 1);
+    if (h !== null) c.value = h.toUpperCase();
+    c.font = { name: "Arial", size: 9.5, bold: true, color: { argb: "FFFFFFFF" } };
+    c.fill = solid("0B83B2");
+    c.alignment = { horizontal: i < 2 ? "left" : "center", vertical: "middle", wrapText: true };
+    c.border = cellBorder;
+  });
+  ws.getRow(r).height = 24;
+  r++;
+  tipos.forEach(t => {
+    ws.mergeCells(r, 1, r, 2);
+    [t.tipo, null, t.operacao || null, t.disponivel || null, t.requer || null, t.manut || null, t.total].forEach((v, i) => {
+      const c = ws.getCell(r, i + 1);
+      if (v !== null) c.value = v;
+      c.font = { name: "Arial", size: 10, bold: i === 6 };
+      c.alignment = { horizontal: i < 2 ? "left" : "center", vertical: "middle" };
+      c.border = cellBorder;
+    });
+    r++;
+  });
+  ws.mergeCells(r, 1, r, 2);
+  ["Total Geral", null, contagem.operacao, contagem.disponivel, contagem.requer, contagem.manut, total].forEach((v, i) => {
+    const c = ws.getCell(r, i + 1);
+    if (v !== null) c.value = v;
+    c.font = { name: "Arial", size: 10, bold: true };
+    c.fill = solid("EDEFF2");
+    c.alignment = { horizontal: i < 2 ? "left" : "center", vertical: "middle" };
+    c.border = cellBorder;
+  });
+
+  const buf = await wb.xlsx.writeBuffer();
+  const url = URL.createObjectURL(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `relatorio-equipamentos-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  toast("Excel do relatório gerado.");
+}
 
 document.getElementById("btn-export-relatorio-mo").addEventListener("click", () => {
   if (!requireUnlock()) return;
@@ -2429,63 +2597,71 @@ document.getElementById("btn-export-relatorio-mo").addEventListener("click", () 
 /* -------------------------------------------------------------------------
    EQUIPAMENTOS — RELATÓRIO PDF (padrão "EFETIVO DE EQUIPAMENTOS LM")
    ------------------------------------------------------------------------- */
-function gerarRelatorioPDF() {
-  if (!requireUnlock()) return;
+// Dados do relatório de equipamentos, compartilhados entre o PDF e o Excel (mesmo conteúdo e mesma ordem).
+function buildEquipRelatorioData() {
   const all = EQUIP_STATE.equipamentos;
   const total = all.length;
-  const proprios = all.filter(w => equipPropriedadeLabel(w.locacao) === "Próprio").length;
-  const locados = all.filter(w => equipPropriedadeLabel(w.locacao) === "Alugado").length;
-  const ativo = all.filter(w => equipStatusClass(w.situacao) === "eq-ativo").length;
-  const manutencao = all.filter(w => equipStatusClass(w.situacao) === "eq-manutencao").length;
-  const inativo = all.filter(w => equipStatusClass(w.situacao) === "eq-inativo").length;
-  const pct = n => total ? (n / total * 100).toFixed(1) : "0.0";
-
+  const proprioLabel = w => { const l = equipPropriedadeLabel(w.locacao); return l === "Próprio" ? "PRÓPRIO" : l === "Alugado" ? "LOCADO" : "—"; };
+  const proprios = all.filter(w => proprioLabel(w) === "PRÓPRIO").length;
+  const locados = all.filter(w => proprioLabel(w) === "LOCADO").length;
+  const BUCKETS = { "eq-ativo": "operacao", "eq-disponivel": "disponivel", "eq-requer-manutencao": "requer", "eq-manutencao": "manut" };
+  const novoContador = () => ({ operacao: 0, disponivel: 0, requer: 0, manut: 0 });
+  const contagem = novoContador();
+  const porTipo = {};
+  const semAcento = str => str.normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const nomeTipo = {};
+  all.forEach(w => {
+    const b = BUCKETS[equipStatusClass(w.situacao)];
+    const bruto = (w.tipo || "—").trim() || "—";
+    const chave = semAcento(bruto).toUpperCase().replace(/\s+/g, " "); // "Rolo", "ROLO" e "Rôlo" viram o mesmo tipo no resumo
+    nomeTipo[chave] ||= bruto.toUpperCase();
+    porTipo[chave] ||= novoContador();
+    if (b) { contagem[b]++; porTipo[chave][b]++; }
+  });
   const byObra = {};
   all.forEach(w => { (byObra[w.obra || "SEM OBRA"] ||= []).push(w); });
-  const obraKeys = Object.keys(byObra).sort((a, b) => a.localeCompare(b));
+  const obras = Object.keys(byObra).sort((a, b) => a.localeCompare(b)).map(obra => {
+    const items = byObra[obra].slice().sort((a, b) => (a.tipo || "").localeCompare(b.tipo || ""));
+    return { obra, items, proprios: items.filter(w => proprioLabel(w) === "PRÓPRIO").length, locados: items.filter(w => proprioLabel(w) === "LOCADO").length };
+  });
+  const tipos = Object.entries(porTipo).sort(([a], [b]) => a.localeCompare(b)).map(([chave, c]) => ({ tipo: nomeTipo[chave], ...c, total: c.operacao + c.disponivel + c.requer + c.manut }));
+  const pct = n => total ? (n / total * 100).toFixed(1) : "0.0";
+  return { total, proprios, locados, contagem, obras, tipos, pct, proprioLabel };
+}
 
-  const situColor = (s) => {
-    const cls = equipStatusClass(s);
-    if (cls === "eq-ativo") return "color:#0B83B2;font-weight:700;";
-    if (cls === "eq-manutencao") return "color:#B45309;font-weight:700;";
-    if (cls === "eq-inativo") return "color:#DC2626;font-weight:700;";
-    return "";
-  };
+function situacaoCorHex(situacao) {
+  const cls = equipStatusClass(situacao);
+  if (cls === "eq-ativo") return "0B83B2";
+  if (cls === "eq-disponivel") return "15803D";
+  if (cls === "eq-requer-manutencao") return "CA8A04";
+  if (cls === "eq-manutencao") return "B45309";
+  if (cls === "eq-inativo") return "DC2626";
+  return "";
+}
+
+function gerarRelatorioPDF() {
+  if (!requireUnlock()) return;
+  const { total, proprios, locados, contagem, obras, tipos, pct, proprioLabel } = buildEquipRelatorioData();
+  const situColor = (s) => { const c = situacaoCorHex(s); return c ? `color:#${c};font-weight:700;` : ""; };
 
   let tableRows = "";
-  obraKeys.forEach(obra => {
-    const items = byObra[obra].slice().sort((a, b) => (a.tipo || "").localeCompare(b.tipo || ""));
+  obras.forEach(({ obra, items, proprios: propriosObra, locados: locadosObra }) => {
     tableRows += `<tr class="grp"><td colspan="7">${escapeHtml(obra)}</td></tr>`;
     items.forEach(w => {
-      const propLabel = equipPropriedadeLabel(w.locacao);
       tableRows += `<tr>
         <td>${escapeHtml(w.obra || "")}</td>
         <td>${escapeHtml(w.tipo || "")}</td>
         <td>${escapeHtml(w.operador || "")}</td>
         <td>${escapeHtml(w.marca || "")}</td>
         <td>${escapeHtml(w.modelo || "")}</td>
-        <td>${propLabel === "Próprio" ? "PRÓPRIO" : propLabel === "Alugado" ? "LOCADO" : "—"}</td>
+        <td>${proprioLabel(w)}</td>
         <td style="${situColor(w.situacao)}">${escapeHtml(w.situacao || "")}</td>
       </tr>`;
     });
-    const propriosObra = items.filter(w => equipPropriedadeLabel(w.locacao) === "Próprio").length;
-    const locadosObra = items.filter(w => equipPropriedadeLabel(w.locacao) === "Alugado").length;
     tableRows += `<tr class="tot"><td colspan="2"><strong>TOTAL ${escapeHtml(obra)}</strong></td><td><strong>${items.length}</strong></td><td><strong>Próprios:</strong></td><td><strong>${propriosObra}</strong></td><td><strong>Locados:</strong></td><td><strong>${locadosObra}</strong></td></tr>`;
   });
 
-  const porTipo = {};
-  all.forEach(w => {
-    const t = w.tipo || "—";
-    porTipo[t] ||= { ATIVO: 0, MANUT: 0, INATIVO: 0 };
-    const cls = equipStatusClass(w.situacao);
-    if (cls === "eq-ativo") porTipo[t].ATIVO++;
-    else if (cls === "eq-manutencao") porTipo[t].MANUT++;
-    else if (cls === "eq-inativo") porTipo[t].INATIVO++;
-  });
-  const resumoRows = Object.entries(porTipo).sort(([a], [b]) => a.localeCompare(b)).map(([tipo, c]) => {
-    const tot = c.ATIVO + c.MANUT + c.INATIVO;
-    return `<tr><td>${escapeHtml(tipo)}</td><td>${c.ATIVO || ""}</td><td>${c.MANUT || ""}</td><td>${c.INATIVO || ""}</td><td><strong>${tot}</strong></td></tr>`;
-  }).join("");
+  const resumoRows = tipos.map(c => `<tr><td>${escapeHtml(c.tipo)}</td><td>${c.operacao || ""}</td><td>${c.disponivel || ""}</td><td>${c.requer || ""}</td><td>${c.manut || ""}</td><td><strong>${c.total}</strong></td></tr>`).join("");
 
   const logoUrl = new URL("logo-lm.png", location.href).href;
   const logoPdcaUrl = new URL("logo-pdca.png", location.href).href;
@@ -2534,8 +2710,8 @@ function gerarRelatorioPDF() {
             <img class="logo-pdca" src="${logoPdcaUrl}" alt="PDCA">
           </div>
           <div class="stats">
-            <div><b>Total de equipamentos</b> ${total} &nbsp; <b>Próprios</b> ${proprios} &nbsp; <b>Locados</b> ${locados} &nbsp; <b>Em manutenção</b> ${manutencao}</div>
-            <div><b>% Próprios</b> ${pct(proprios)}% &nbsp; <b>% Locados</b> ${pct(locados)}% &nbsp; <b>Inativo</b> ${inativo} &nbsp; <b>Em operação</b> ${ativo}</div>
+            <div><b>Total de equipamentos</b> ${total} &nbsp; <b>Próprios</b> ${proprios} &nbsp; <b>Locados</b> ${locados} &nbsp; <b>% Próprios</b> ${pct(proprios)}% &nbsp; <b>% Locados</b> ${pct(locados)}%</div>
+            <div><b>Em operação</b> ${contagem.operacao} &nbsp; <b>Disponível</b> ${contagem.disponivel} &nbsp; <b>Requer manutenção</b> ${contagem.requer} &nbsp; <b>Em manutenção</b> ${contagem.manut}</div>
           </div>
         </div>
       </th></tr>
@@ -2545,9 +2721,9 @@ function gerarRelatorioPDF() {
   </table>
   <h2>Resumo por tipo de equipamento</h2>
   <table>
-    <colgroup><col style="width:40%"><col style="width:15%"><col style="width:15%"><col style="width:15%"><col style="width:15%"></colgroup>
-    <thead><tr class="colhead-row"><th>Nome do equipamento</th><th>Ativo</th><th>Manutenção</th><th>Inativo</th><th>Total Geral</th></tr></thead>
-    <tbody>${resumoRows}<tr class="tot"><td><strong>Total Geral</strong></td><td><strong>${ativo}</strong></td><td><strong>${manutencao}</strong></td><td><strong>${inativo}</strong></td><td><strong>${total}</strong></td></tr></tbody>
+    <colgroup><col style="width:34%"><col style="width:13%"><col style="width:13%"><col style="width:14%"><col style="width:13%"><col style="width:13%"></colgroup>
+    <thead><tr class="colhead-row"><th>Nome do equipamento</th><th>Em operação</th><th>Disponível</th><th>Requer manut.</th><th>Em manut.</th><th>Total Geral</th></tr></thead>
+    <tbody>${resumoRows}<tr class="tot"><td><strong>Total Geral</strong></td><td><strong>${contagem.operacao}</strong></td><td><strong>${contagem.disponivel}</strong></td><td><strong>${contagem.requer}</strong></td><td><strong>${contagem.manut}</strong></td><td><strong>${total}</strong></td></tr></tbody>
   </table>
   <button class="no-print" onclick="window.print()" style="padding:10px 16px;font-size:13px;cursor:pointer;">Imprimir / Salvar PDF</button>
 </body></html>`;
