@@ -2842,6 +2842,15 @@ function renderRelatorioMaoDeObra() {
 /* -------------------------------------------------------------------------
    MÃO DE OBRA — RELATÓRIO PDF (padrão "EFETIVO DE MÃO DE OBRA CONSOLIDADO LM")
    ------------------------------------------------------------------------- */
+// Observação do relatório: "folha e efetivo" fica em branco (só a observação própria, se houver);
+// "apenas folha" mostra entre parênteses o centro de custo; as demais mostram a classificação.
+function obsRelatorio(w, c) {
+  const obs = escapeHtml(w.obs || "");
+  if (c === "FOLHA E EFETIVO" || !c) return obs;
+  if (c === "APENAS FOLHA") return w.centroCusto ? `(${escapeHtml(w.centroCusto)})` : "";
+  return `<strong>${escapeHtml(c)}</strong>${obs ? " · " : ""}${obs}`;
+}
+
 async function gerarRelatorioMaoDeObraPDF() {
   if (!requireUnlock()) return;
   if (cruzamentoResumo === null) { try { cruzamentoResumo = await getCruzamentoResumo(); } catch { cruzamentoResumo = []; } }
@@ -2859,7 +2868,7 @@ async function gerarRelatorioMaoDeObraPDF() {
   // quem está só na folha não existe no efetivo, mas precisa aparecer no relatório (na obra da folha)
   if (resumo) resumo.filter(l => l.c === "APENAS FOLHA").forEach(l => {
     const obra = colunaDaObra(l.f, obraKeys, all);
-    (byObra[obra] ||= []).push({ nome: l.n, funcao: l.fu, fornecedor: l.em || "LM", status: "SÓ NA FOLHA", obs: "", _classif: "APENAS FOLHA" });
+    (byObra[obra] ||= []).push({ nome: l.n, funcao: l.fu, fornecedor: l.em || "LM", status: "SÓ NA FOLHA", obs: "", centroCusto: l.cc || l.f || "", _classif: "APENAS FOLHA" });
   });
   const listaObras = Object.keys(byObra).sort((a, b) => a.localeCompare(b));
 
@@ -2883,7 +2892,7 @@ async function gerarRelatorioMaoDeObraPDF() {
         <td style="${bg}">${escapeHtml(w.nome || "")}</td>
         <td style="${bg}">${escapeHtml(w.fornecedor || "")}</td>
         <td style="${bg}${statusColor(w.status)}">${escapeHtml(w.status || "")}</td>
-        <td style="${bg}">${c ? `<strong>${escapeHtml(c)}</strong>${w.obs ? " · " : ""}` : ""}${escapeHtml(w.obs || "")}</td>
+        <td style="${bg}">${obsRelatorio(w, c)}</td>
       </tr>`;
     });
     const chip = (label, n) => n ? ` &nbsp; <span style="background:${CLASSIF_COLORS[label]};padding:1px 6px;"><strong>${n} ${label.toLowerCase()}</strong></span>` : "";
@@ -3246,7 +3255,7 @@ function renderGruposNaoReconhecidos(folhaRegistros, linhas) {
 
 function renderCruzamento(linhas) {
   pendingCruzamento = linhas;
-  cruzamentoResumo = linhas.filter(l => l.classificacao).map(l => ({ i: l.colaboradorId || "", n: l.nome, e: l.obraEfetivo, f: l.obraFolhaRef || l.obraFolha, c: l.classificacao, fu: l.funcao || "", em: l.empresa || "" }));
+  cruzamentoResumo = linhas.filter(l => l.classificacao).map(l => ({ i: l.colaboradorId || "", n: l.nome, e: l.obraEfetivo, f: l.obraFolhaRef || l.obraFolha, c: l.classificacao, fu: l.funcao || "", em: l.empresa || "", cc: l.obraFolha && l.obraFolha !== "—" ? l.obraFolha : "" }));
   setCruzamentoResumo(cruzamentoResumo).catch(err => console.warn("Não consegui salvar o resumo do cruzamento:", err));
   document.getElementById("folha-cruzamento-panel").style.display = "";
   const counts = {};
