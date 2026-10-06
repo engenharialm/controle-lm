@@ -2842,12 +2842,11 @@ function renderRelatorioMaoDeObra() {
 /* -------------------------------------------------------------------------
    MÃO DE OBRA — RELATÓRIO PDF (padrão "EFETIVO DE MÃO DE OBRA CONSOLIDADO LM")
    ------------------------------------------------------------------------- */
-// Observação do relatório: "folha e efetivo" fica em branco (só a observação própria, se houver);
-// "apenas folha" mostra entre parênteses o centro de custo; as demais mostram a classificação.
+// Observação do relatório: "folha e efetivo" e "apenas folha" mostram só a observação própria (o centro de custo
+// fica na sua coluna); as demais mostram também o nome da classificação.
 function obsRelatorio(w, c) {
   const obs = escapeHtml(w.obs || "");
-  if (c === "FOLHA E EFETIVO" || !c) return obs;
-  if (c === "APENAS FOLHA") return w.centroCusto ? `(${escapeHtml(w.centroCusto)})` : "";
+  if (c === "FOLHA E EFETIVO" || c === "APENAS FOLHA" || !c) return obs;
   return `<strong>${escapeHtml(c)}</strong>${obs ? " · " : ""}${obs}`;
 }
 
@@ -2861,10 +2860,12 @@ async function gerarRelatorioMaoDeObraPDF() {
   const resumo = cruzamentoResumo && cruzamentoResumo.length ? cruzamentoResumo : null;
   const classPorId = {};
   if (resumo) resumo.forEach(l => { if (l.i) classPorId[l.i] = l.c; });
+  const ccPorId = {};
+  if (resumo) resumo.forEach(l => { if (l.i) ccPorId[l.i] = l.cc || ""; });
   const classDe = w => (resumo && classPorId[w.id]) || (w.classificacao || "").toUpperCase();
 
   const byObra = {};
-  all.forEach(w => { (byObra[w.obra || "SEM OBRA"] ||= []).push({ ...w, _classif: classDe(w) }); });
+  all.forEach(w => { (byObra[w.obra || "SEM OBRA"] ||= []).push({ ...w, _classif: classDe(w), centroCusto: ccPorId[w.id] || "" }); });
   // quem está só na folha não existe no efetivo, mas precisa aparecer no relatório (na obra da folha)
   if (resumo) resumo.filter(l => l.c === "APENAS FOLHA").forEach(l => {
     const obra = colunaDaObra(l.f, obraKeys, all);
@@ -2883,7 +2884,7 @@ async function gerarRelatorioMaoDeObraPDF() {
   let tableRows = "";
   listaObras.forEach(obra => {
     const items = byObra[obra].slice().sort((a, b) => (a.funcao || "").localeCompare(b.funcao || ""));
-    tableRows += `<tr class="grp"><td colspan="5">${escapeHtml(obra)}</td></tr>`;
+    tableRows += `<tr class="grp"><td colspan="6">${escapeHtml(obra)}</td></tr>`;
     items.forEach(w => {
       const c = w._classif;
       const bg = CLASSIF_COLORS[c] && c !== "FOLHA E EFETIVO" ? `background:${CLASSIF_COLORS[c]};` : ""; // certo (folha e efetivo) fica sem destaque
@@ -2892,12 +2893,13 @@ async function gerarRelatorioMaoDeObraPDF() {
         <td style="${bg}">${escapeHtml(w.nome || "")}</td>
         <td style="${bg}">${escapeHtml(w.fornecedor || "")}</td>
         <td style="${bg}${statusColor(w.status)}">${escapeHtml(w.status || "")}</td>
+        <td style="${bg}">${c === "FOLHA E EFETIVO" ? "" : escapeHtml(w.centroCusto || "")}</td>
         <td style="${bg}">${obsRelatorio(w, c)}</td>
       </tr>`;
     });
     const chip = (label, n) => n ? ` &nbsp; <span style="background:${CLASSIF_COLORS[label]};padding:1px 6px;"><strong>${n} ${label.toLowerCase()}</strong></span>` : "";
     const qtd = label => items.filter(w => w._classif === label).length;
-    tableRows += `<tr class="tot"><td colspan="4"><strong>TOTAL DE COLABORADORES</strong>${chip("FOLHA DIFERENTE", qtd("FOLHA DIFERENTE"))}${chip("APENAS FOLHA", qtd("APENAS FOLHA"))}</td><td><strong>${items.length}</strong></td></tr>`;
+    tableRows += `<tr class="tot"><td colspan="5"><strong>TOTAL DE COLABORADORES</strong>${chip("FOLHA DIFERENTE", qtd("FOLHA DIFERENTE"))}${chip("APENAS FOLHA", qtd("APENAS FOLHA"))}</td><td><strong>${items.length}</strong></td></tr>`;
   });
 
   const pivotHead = `<th></th>${obraKeys.map(o => `<th>${escapeHtml(o)}</th>`).join("")}<th class="gap"></th><th></th><th>Total Geral</th>`;
@@ -2961,10 +2963,10 @@ async function gerarRelatorioMaoDeObraPDF() {
 <body>
   <table>
     <colgroup>
-      <col style="width:20%"><col style="width:28%"><col style="width:18%"><col style="width:16%"><col style="width:18%">
+      <col style="width:17%"><col style="width:25%"><col style="width:13%"><col style="width:11%"><col style="width:17%"><col style="width:17%">
     </colgroup>
     <thead>
-      <tr class="header-row"><th colspan="5">
+      <tr class="header-row"><th colspan="6">
         <div class="header">
           <div class="header-top">
             <img src="${logoUrl}" alt="LM">
@@ -2976,7 +2978,7 @@ async function gerarRelatorioMaoDeObraPDF() {
           <table><thead><tr>${pivotHead}</tr></thead><tbody>${pivotRows}${pivotTotalRow}</tbody></table>
         </div>
       </th></tr>
-      <tr class="colhead-row"><th>Função</th><th>Nome</th><th>Tipo / Fornecedor</th><th>Status</th><th>Observação</th></tr>
+      <tr class="colhead-row"><th>Função</th><th>Nome</th><th>Tipo / Fornecedor</th><th>Status</th><th>Centro de custo</th><th>Observação</th></tr>
     </thead>
     <tbody>${tableRows}</tbody>
   </table>
