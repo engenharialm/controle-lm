@@ -2930,6 +2930,10 @@ function obraTokens(s) {
     .filter(t => t && t.length >= 3 && !OBRA_STOPWORDS.has(t) && !/^\d+$/.test(t));
 }
 function obrasMatch(a, b) {
+  if (normNome(a) && normNome(a) === normNome(b)) return true;
+  const numeros = s => (stripAccents(s || "").match(/\d+/g) || []);
+  const na = numeros(a), nb = numeros(b);
+  if (na.length && nb.length && !na.some(n => nb.includes(n))) return false; // ex.: DNIT 116 x DNIT 265
   const ta = obraTokens(a), tb = obraTokens(b);
   if (!ta.length || !tb.length) return false;
   return ta.some(t1 => tb.some(t2 => t1 === t2 || (t1.length >= 5 && t2.length >= 5 && (t1.startsWith(t2.slice(0, 5)) || t2.startsWith(t1.slice(0, 5))))));
@@ -2949,11 +2953,14 @@ function parseFolhaExcel(rows) {
     const rowUpper = row.map(c => formatCell(c).toUpperCase());
     if (rowUpper.some(c => c.includes("NOME")) && rowUpper.some(c => c.includes("FUNÇÃO") || c.includes("FUNCAO"))) {
       rowUpper.forEach((c, idx) => {
-        if (c.includes("CÓDIGO") || c.includes("CODIGO")) colIdx.codigo = idx;
+        if (c.includes("SIENG")) return; // "OBRA (CÓDIGO SIENG)" não é o código do colaborador nem a obra da folha
+        if (c.includes("CÓDIGO") || c.includes("CODIGO") || c === "COD." || c === "COD") colIdx.codigo = idx;
+        else if (c.includes("REGIONAL")) colIdx.regional = idx;
+        else if (c.includes("CENTRO DE CUSTO") || c.includes("LOCALIZA") || c.startsWith("OBRA")) colIdx.obra = idx; // modelo padrão: obra por linha
         else if (c.includes("NOME")) colIdx.nome = idx;
         else if (c.includes("ADM")) colIdx.dataAdm = idx;
         else if (c.includes("FUNÇÃO") || c.includes("FUNCAO")) colIdx.funcao = idx;
-        else if (c.includes("EMPRESA")) colIdx.empresa = idx;
+        else if (c.includes("EMPRESA") || c.includes("FORNECEDOR")) colIdx.empresa = idx;
         else if (c.includes("OBSERVA")) colIdx.obs = idx;
       });
       continue;
@@ -2964,8 +2971,10 @@ function parseFolhaExcel(rows) {
     const codigo = colIdx.codigo !== undefined ? formatCell(row[colIdx.codigo]) : "";
     const dataAdmRaw = colIdx.dataAdm !== undefined ? row[colIdx.dataAdm] : "";
     if (!codigo && !formatCell(dataAdmRaw)) continue; // linha de rótulo/observação, não é colaborador
+    const obraLinha = colIdx.obra !== undefined ? formatCell(row[colIdx.obra]).replace(/^OBRA\s*[-–—]\s*/i, "").trim() : "";
     registros.push({
-      obra: currentObra, nome: nome.trim(), cod: codigo,
+      obra: obraLinha || currentObra, regional: colIdx.regional !== undefined ? formatCell(row[colIdx.regional]).trim() : "",
+      nome: nome.trim(), cod: codigo,
       admissao: excelSerialToDateStr(dataAdmRaw),
       funcao: colIdx.funcao !== undefined ? formatCell(row[colIdx.funcao]).trim() : "",
       empresa: colIdx.empresa !== undefined ? formatCell(row[colIdx.empresa]).trim() : "",
@@ -2978,7 +2987,7 @@ function parseFolhaExcel(rows) {
 // Empresas do grupo LM (não contam como PJ/terceirizado): LM, LR Caçamba(s) e JR Prime.
 function isEmpresaGrupoLM(nome) {
   const s = (nome || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return /^(LM(CONSTRUTORA.*)?|LRCACAMBAS?.*|JRPRIME.*)$/.test(s);
+  return /^(LM(CONSTRUTORA.*)?|(LM)?(LRCACAMBAS?|JRPRIME).*)$/.test(s);
 }
 
 let pendingCruzamento = null;
@@ -3085,7 +3094,7 @@ function renderGruposNaoReconhecidos(folhaRegistros, linhas) {
     return `<div class="panel" style="padding:14px;">
       <div class="grupo-card-head" data-target="${cardId}" style="cursor:pointer;">
         <div style="font-weight:700;font-size:15px;">${escapeHtml(encarregado ? encarregado.nome : (centro || "(sem nome)"))}</div>
-        <div style="font-size:12px;color:var(--text-mut,#666);margin:2px 0 8px;">${encarregado ? `Encarregado · ${escapeHtml(centro)}` : escapeHtml(centro || "(sem nome)")} · ${regs.length} pessoa(s)</div>
+        <div style="font-size:12px;color:var(--text-mut,#666);margin:2px 0 8px;">${encarregado ? `Encarregado · ${escapeHtml(centro)}` : escapeHtml(centro || "(sem nome)")} · ${regs.length} pessoa(s)${regs[0].regional ? ` · Regional ${escapeHtml(regs[0].regional)}` : ""}</div>
       </div>
       <select class="folha-obra-assign" data-centro="${escapeHtml(centro)}" style="width:100%;margin-bottom:8px;">${opts}</select>
       <div id="${cardId}" class="grupo-card-body" style="display:none;border-top:1px solid var(--border);margin-top:8px;padding-top:8px;max-height:220px;overflow-y:auto;">
