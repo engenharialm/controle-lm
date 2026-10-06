@@ -1506,6 +1506,9 @@ async function reload() {
     STATE = lsRead(LS_KEY, "colaboradores");
   }
   renderAll();
+  if (pendingFolhaRegistros) {
+    try { renderCruzamento(computeCruzamento(pendingFolhaRegistros, folhaObraMap)); } catch (e) { console.warn("Não consegui atualizar o cruzamento:", e); }
+  }
 }
 
 async function reloadEquip() {
@@ -3042,6 +3045,63 @@ function isEmpresaGrupoLM(nome) {
 let pendingCruzamento = null;
 let pendingFolhaRegistros = null;
 let folhaObraMap = {};
+let cruzamentoSoNomesParecidos = false;
+
+// distância de edição (inserir/remover/trocar uma letra), com corte: devolve max+1 se passar do limite
+function distanciaEdicao(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let menor = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (cur[j] < menor) menor = cur[j];
+    }
+    if (menor > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+// nomes (já normalizados) diferentes mas muito parecidos: uma letra errada, faltando/sobrando ou palavras trocadas de ordem
+function nomesParecidos(a, b) {
+  if (a === b) return false;
+  const len = Math.max(a.length, b.length);
+  if (len < 10) return false;
+  const ordenado = x => x.split(" ").sort().join(" ");
+  if (ordenado(a) === ordenado(b)) return true;
+  const d = distanciaEdicao(a, b, 2);
+  return d <= 2 && d / len <= 0.12;
+}
+
+// Marca nas linhas do cruzamento os nomes que parecem o mesmo (erro de digitação) em listas diferentes
+// ou duplicados dentro da mesma lista, pra serem ajustados.
+function marcarNomesParecidos(linhas, efetivo, folhaRegistros) {
+  const exibir = {}; // nome normalizado -> como aparece
+  const ef = [...new Set(efetivo.map(w => { const k = normNome(w.nome); exibir[k] ||= w.nome; return k; }))];
+  const fo = [...new Set(folhaRegistros.map(f => { const k = normNome(f.nome); exibir[k] ||= f.nome; return k; }))];
+  const efSet = new Set(ef), foSet = new Set(fo);
+  const achados = {}; // nome normalizado -> [{k, onde}]
+  const add = (a, b, onde) => { (achados[a] ||= []).push({ k: b, onde }); };
+  const mesmaLista = (lista, nomeLista) => {
+    for (let i = 0; i < lista.length; i++) for (let j = i + 1; j < lista.length; j++) {
+      if (nomesParecidos(lista[i], lista[j])) { add(lista[i], lista[j], `mesma lista (${nomeLista})`); add(lista[j], lista[i], `mesma lista (${nomeLista})`); }
+    }
+  };
+  mesmaLista(ef, "efetivo");
+  mesmaLista(fo, "folha");
+  const efSo = ef.filter(n => !foSet.has(n)), foSo = fo.filter(n => !efSet.has(n));
+  efSo.forEach(a => foSo.forEach(b => {
+    if (nomesParecidos(a, b)) { add(a, b, "folha"); add(b, a, "efetivo"); }
+  }));
+  linhas.forEach(l => {
+    const lista = achados[normNome(l.nome)];
+    if (!lista || !lista.length) return;
+    l.alertaNome = true;
+    l.obs = (l.obs ? l.obs + " · " : "") + "⚠ Nome parecido: " + lista.map(x => `${exibir[x.k]} (${x.onde})`).join("; ");
+  });
+}
 
 function computeCruzamento(folhaRegistros, obraMap) {
   const map = obraMap || {};
@@ -3110,6 +3170,7 @@ function computeCruzamento(folhaRegistros, obraMap) {
     });
   });
 
+  marcarNomesParecidos(linhas, efetivo, folhaRegistros);
   linhas.sort((a, b) => a.nome.localeCompare(b.nome));
   return linhas;
 }
@@ -3176,14 +3237,22 @@ function renderCruzamento(linhas) {
   const counts = {};
   linhas.forEach(l => { counts[l.classificacao] = (counts[l.classificacao] || 0) + 1; });
   const dupCount = linhas.filter(l => l.obs.startsWith("Possível duplicidade")).length;
+  const parecidos = linhas.filter(l => l.alertaNome).length;
   document.getElementById("folha-cruzamento-resumo").innerHTML =
     `<strong>${linhas.length}</strong> nomes comparados — ` +
     CLASSIF_LABELS.map(l => `${escapeHtml(l)}: <strong>${counts[l] || 0}</strong>`).join(" · ") +
-    (dupCount ? ` · <span style="color:var(--warning);">Possível duplicidade: <strong>${dupCount}</strong></span>` : "");
-  document.getElementById("folha-cruzamento-body").innerHTML = linhas.map(l => {
-    const warn = l.classificacao === "FOLHA DIFERENTE" || l.obs.startsWith("Possível duplicidade") || l.classificacao === "APENAS FOLHA" || l.classificacao === "APENAS EFETIVO";
-    return `<tr>
-      <td data-label="Nome">${escapeHtml(l.nome)}</td>
+    (dupCount ? ` · <span style="color:var(--warning);">Possível duplicidade: <strong>${dupCount}</strong></span>` : "") +
+    (parecidos ? ` · <span style="background:#FFF2B3;padding:1px 6px;border-radius:4px;"><strong>⚠ Nomes parecidos (ajustar): ${parecidos}</strong></span>` : "") +
+    ((parecidos || dupCount) ? ` <button class="btn btn-ghost btn-sm" id="btn-filtro-ajustes" style="margin-left:8px;">${cruzamentoSoNomesParecidos ? "Ver todos" : "Ver só duplicados / parecidos"}</button>` : "");
+  const btnFiltro = document.getElementById("btn-filtro-ajustes");
+  if (btnFiltro) btnFiltro.addEventListener("click", () => { cruzamentoSoNomesParecidos = !cruzamentoSoNomesParecidos; renderCruzamento(linhas); });
+  const visiveis = cruzamentoSoNomesParecidos ? linhas.filter(l => l.alertaNome || l.obs.startsWith("Possível duplicidade")) : linhas;
+  document.getElementById("folha-cruzamento-body").innerHTML = visiveis.map(l => {
+    const dupl = l.obs.startsWith("Possível duplicidade");
+    const warn = l.classificacao === "FOLHA DIFERENTE" || dupl || l.alertaNome || l.classificacao === "APENAS FOLHA" || l.classificacao === "APENAS EFETIVO";
+    const bg = l.alertaNome ? "background:#FFF2B3;" : (dupl ? "background:#FDE2C4;" : "");
+    return `<tr style="${bg}">
+      <td data-label="Nome">${l.alertaNome || dupl ? "⚠ " : ""}${escapeHtml(l.nome)}${l.colaboradorId ? ` <button class="icon-btn" data-edit-colab="${l.colaboradorId}" title="Editar este colaborador no efetivo" style="width:22px;height:22px;">✎</button>` : ""}</td>
       <td data-label="Obra (Efetivo)">${escapeHtml(l.obraEfetivo)}</td>
       <td data-label="Obra (Folha)">${escapeHtml(l.obraFolha)}</td>
       <td data-label="Classificação"><strong>${escapeHtml(l.classificacao)}</strong></td>
@@ -3192,6 +3261,13 @@ function renderCruzamento(linhas) {
   }).join("") || `<tr><td colspan="5" class="empty-state">Nenhum registro para comparar.</td></tr>`;
   if (pendingFolhaRegistros) renderGruposNaoReconhecidos(pendingFolhaRegistros, linhas);
 }
+
+document.getElementById("folha-cruzamento-body").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-edit-colab]");
+  if (!btn) return;
+  const w = STATE.colaboradores.find(c => c.id === btn.dataset.editColab);
+  if (w) openWorkerModal(w);
+});
 
 document.getElementById("btn-import-folha").addEventListener("click", () => {
   if (!requireUnlock()) return;
