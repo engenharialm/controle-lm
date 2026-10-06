@@ -2886,7 +2886,7 @@ async function gerarRelatorioMaoDeObraPDF() {
     tableRows += `<tr class="grp"><td colspan="5">${escapeHtml(obra)}</td></tr>`;
     items.forEach(w => {
       const c = w._classif;
-      const bg = CLASSIF_COLORS[c] ? `background:${CLASSIF_COLORS[c]};` : "";
+      const bg = CLASSIF_COLORS[c] && c !== "FOLHA E EFETIVO" ? `background:${CLASSIF_COLORS[c]};` : ""; // certo (folha e efetivo) fica sem destaque
       tableRows += `<tr class="cl">
         <td style="${bg}">${escapeHtml(w.funcao || "")}</td>
         <td style="${bg}">${escapeHtml(w.nome || "")}</td>
