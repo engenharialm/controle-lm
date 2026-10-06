@@ -1032,7 +1032,7 @@ const CLASSIF_LABELS = ["FOLHA E EFETIVO","FOLHA DIFERENTE","APENAS FOLHA","APEN
 const CLASSIF_COLORS = {
   "FOLHA E EFETIVO": "#C6E0B4",
   "FOLHA DIFERENTE": "#F4A6A6",
-  "APENAS FOLHA": "#C6E0B4",
+  "APENAS FOLHA": "#FFE699",
   "APENAS EFETIVO": "#FCD5B4",
   "PJ / TERCERIZADO": "#BDD7EE"
 };
@@ -2815,15 +2815,17 @@ function gerarRelatorioMaoDeObraPDF() {
     const items = byObra[obra].slice().sort((a, b) => (a.funcao || "").localeCompare(b.funcao || ""));
     tableRows += `<tr class="grp"><td colspan="5">${escapeHtml(obra)}</td></tr>`;
     items.forEach(w => {
-      tableRows += `<tr>
+      const diferente = (w.classificacao || "").toUpperCase() === "FOLHA DIFERENTE";
+      tableRows += `<tr${diferente ? ` class="dif"` : ""}>
         <td>${escapeHtml(w.funcao || "")}</td>
         <td>${escapeHtml(w.nome || "")}</td>
         <td>${escapeHtml(w.fornecedor || "")}</td>
         <td style="${statusColor(w.status)}">${escapeHtml(w.status || "")}</td>
-        <td>${escapeHtml(w.obs || "")}</td>
+        <td>${diferente ? `<strong>FOLHA DIFERENTE</strong>${w.obs ? " · " : ""}` : ""}${escapeHtml(w.obs || "")}</td>
       </tr>`;
     });
-    tableRows += `<tr class="tot"><td colspan="4"><strong>TOTAL DE COLABORADORES</strong></td><td><strong>${items.length}</strong></td></tr>`;
+    const qtdDif = items.filter(w => (w.classificacao || "").toUpperCase() === "FOLHA DIFERENTE").length;
+    tableRows += `<tr class="tot"><td colspan="4"><strong>TOTAL DE COLABORADORES</strong>${qtdDif ? ` &nbsp; <span style="background:${CLASSIF_COLORS["FOLHA DIFERENTE"]};padding:1px 6px;"><strong>${qtdDif} com folha diferente</strong></span>` : ""}</td><td><strong>${items.length}</strong></td></tr>`;
   });
 
   const pivotHead = `<th></th>${obraKeys.map(o => `<th>${escapeHtml(o)}</th>`).join("")}<th class="gap"></th><th></th><th>Total Geral</th>`;
@@ -2852,7 +2854,7 @@ function gerarRelatorioMaoDeObraPDF() {
   const logoPdcaUrl = new URL("logo-pdca.png", location.href).href;
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Efetivo de Mão de Obra LM</title>
 <style>
-  *{box-sizing:border-box;}
+  *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
   html,body{width:100%;}
   body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#111;margin:0;padding:10px;}
   .header{border:2px solid #111;padding:10px 14px;background:#fff;}
@@ -2868,7 +2870,7 @@ function gerarRelatorioMaoDeObraPDF() {
   thead .colhead-row th{background:#0B83B2;color:#fff;text-transform:uppercase;font-size:9.5px;white-space:nowrap;}
   .pivot-wrap{padding:8px 14px 10px;}
   .pivot-wrap table{margin-bottom:0;}
-  .pivot-wrap th{background:#0B83B2;color:#fff;font-size:9px;white-space:nowrap;text-align:center;}
+  .pivot-wrap th{background:#0B83B2;color:#000;font-size:9px;white-space:nowrap;text-align:center;}
   .pivot-wrap td{font-size:9.5px;text-align:center;border:1px solid #999;}
   .pivot-wrap td:first-child{text-align:left;}
   .pivot-wrap th.gap,.pivot-wrap td.gap{border:none;background:none;padding:0;width:14px;}
@@ -2877,6 +2879,7 @@ function gerarRelatorioMaoDeObraPDF() {
   tr.grp{page-break-after:avoid;}
   tr.grp td{background:#DCEEF6;font-weight:800;text-align:center;}
   tr.tot td{background:#EDEFF2;}
+  tr.dif td{background:#F4A6A6;font-weight:700;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
   .no-print{margin-top:10px;}
   @media print{
     .no-print{display:none;}
