@@ -1463,6 +1463,27 @@ async function setFolhaObraMap(map) {
   localStorage.setItem(LS_KEY_FOLHA_OBRA_MAP, JSON.stringify(map));
 }
 
+/* Resumo do último cruzamento Folha x Efetivo (alimenta o quadro "Folha x Efetivo por obra" dos Relatórios) */
+const LS_KEY_CRUZ_RESUMO = "consolidadoCruzamentoResumo";
+let cruzamentoResumo = null; // null = ainda não carregado
+
+async function getCruzamentoResumo() {
+  if (useFirebase) {
+    return withTimeout(async () => {
+      const snap = await fs.getDoc(fs.doc(db, "config", "cruzamentoResumo"));
+      return snap.exists() ? (snap.data().linhas || []) : [];
+    });
+  }
+  return JSON.parse(localStorage.getItem(LS_KEY_CRUZ_RESUMO) || "[]");
+}
+
+async function setCruzamentoResumo(linhas) {
+  if (useFirebase) {
+    return withTimeout(() => fs.setDoc(fs.doc(db, "config", "cruzamentoResumo"), { linhas, updatedAt: Date.now() }));
+  }
+  localStorage.setItem(LS_KEY_CRUZ_RESUMO, JSON.stringify(linhas));
+}
+
 function cryptoId() { return "id-" + Math.random().toString(36).slice(2) + Date.now().toString(36); }
 function slugify(s) { return (s || "sem-obra").toString().trim().toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "SEM-OBRA"; }
 
@@ -2748,6 +2769,25 @@ function buildFolhaEfetivoPivot() {
     : [...new Set(all.map(w => w.obra || "SEM OBRA"))].sort((a, b) => a.localeCompare(b));
   const pivot = {};
   CLASSIF_LABELS.forEach(label => { pivot[label] = {}; obraKeys.forEach(o => pivot[label][o] = 0); });
+
+  // Com um cruzamento feito, o quadro vem dele (inclui "APENAS FOLHA", que não existe no efetivo) — sem precisar "aplicar".
+  if (cruzamentoResumo && cruzamentoResumo.length) {
+    const obrasDoEfetivo = [...new Set(all.map(w => w.obra).filter(Boolean))];
+    const colunaDe = nome => {
+      if (!nome || nome === "—") return "SEM OBRA";
+      const alvo = obraKeys.find(o => obraChave(o) === obraChave(nome)) || obrasDoEfetivo.find(o => obraChave(o) === obraChave(nome))
+        || obraKeys.find(o => obrasMatch(o, nome)) || obrasDoEfetivo.find(o => obrasMatch(o, nome));
+      return alvo || "SEM OBRA";
+    };
+    cruzamentoResumo.forEach(l => {
+      if (!pivot[l.c]) return;
+      const obra = l.c === "APENAS FOLHA" ? colunaDe(l.f) : (l.e && l.e !== "—" ? colunaDe(l.e) : colunaDe(l.f));
+      if (!obraKeys.includes(obra)) { obraKeys.push(obra); CLASSIF_LABELS.forEach(label => pivot[label][obra] = 0); }
+      pivot[l.c][obra]++;
+    });
+    return { obraKeys, pivot };
+  }
+
   all.forEach(w => {
     const label = CLASSIF_LABELS.includes((w.classificacao || "").toUpperCase()) ? (w.classificacao || "").toUpperCase() : null;
     if (!label) return;
@@ -2758,6 +2798,10 @@ function buildFolhaEfetivoPivot() {
 }
 
 function renderRelatorioMaoDeObra() {
+  if (cruzamentoResumo === null) {
+    cruzamentoResumo = [];
+    getCruzamentoResumo().then(r => { cruzamentoResumo = r; renderRelatorioMaoDeObra(); }).catch(() => {});
+  }
   const all = STATE.colaboradores;
   document.getElementById("relmo-total").textContent = all.length;
   document.getElementById("relmo-ativos").textContent = all.filter(w => statusClass(w.status) === "st-ativo").length;
@@ -3044,6 +3088,7 @@ function computeCruzamento(folhaRegistros, obraMap) {
       linhas.push({
         colaboradorId: efetivoRec.id, nome: efetivoRec.nome,
         obraEfetivo: efetivoRec.obra || "—", obraFolha: folhaRec ? (folhaRec.obra || "—") : "—",
+        obraFolhaRef: folhaRec ? obraFolhaResolvida(folhaRec) : "",
         classificacao: r.classificacao,
         obs: (dup ? "Possível duplicidade — " : "") + r.obs
       });
@@ -3058,6 +3103,7 @@ function computeCruzamento(folhaRegistros, obraMap) {
       linhas.push({
         colaboradorId: null, nome: folhaRec.nome,
         obraEfetivo: "—", obraFolha: folhaRec.obra || "—",
+        obraFolhaRef: obraFolhaResolvida(folhaRec),
         classificacao: r.classificacao,
         obs: (dup ? "Possível duplicidade — " : "") + r.obs
       });
@@ -3124,6 +3170,8 @@ function renderGruposNaoReconhecidos(folhaRegistros, linhas) {
 
 function renderCruzamento(linhas) {
   pendingCruzamento = linhas;
+  cruzamentoResumo = linhas.filter(l => l.classificacao).map(l => ({ n: l.nome, e: l.obraEfetivo, f: l.obraFolhaRef || l.obraFolha, c: l.classificacao }));
+  setCruzamentoResumo(cruzamentoResumo).catch(err => console.warn("Não consegui salvar o resumo do cruzamento:", err));
   document.getElementById("folha-cruzamento-panel").style.display = "";
   const counts = {};
   linhas.forEach(l => { counts[l.classificacao] = (counts[l.classificacao] || 0) + 1; });
