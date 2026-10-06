@@ -2765,6 +2765,14 @@ document.getElementById("btn-relatorio-pdf").addEventListener("click", gerarRela
 /* -------------------------------------------------------------------------
    MÃO DE OBRA — RELATÓRIO (Folha x Efetivo)
    ------------------------------------------------------------------------- */
+// Em qual obra (coluna) uma obra/centro de custo da folha deve ser contada; sem correspondência vai pra "SEM OBRA"
+function colunaDaObra(nome, obraKeys, colaboradores) {
+  if (!nome || nome === "—") return "SEM OBRA";
+  const obrasDoEfetivo = [...new Set(colaboradores.map(w => w.obra).filter(Boolean))];
+  return obraKeys.find(o => obraChave(o) === obraChave(nome)) || obrasDoEfetivo.find(o => obraChave(o) === obraChave(nome))
+    || obraKeys.find(o => obrasMatch(o, nome)) || obrasDoEfetivo.find(o => obrasMatch(o, nome)) || "SEM OBRA";
+}
+
 function buildFolhaEfetivoPivot() {
   const all = STATE.colaboradores;
   const obraKeys = Object.keys(STATE.obras).length
@@ -2775,13 +2783,7 @@ function buildFolhaEfetivoPivot() {
 
   // Com um cruzamento feito, o quadro vem dele (inclui "APENAS FOLHA", que não existe no efetivo) — sem precisar "aplicar".
   if (cruzamentoResumo && cruzamentoResumo.length) {
-    const obrasDoEfetivo = [...new Set(all.map(w => w.obra).filter(Boolean))];
-    const colunaDe = nome => {
-      if (!nome || nome === "—") return "SEM OBRA";
-      const alvo = obraKeys.find(o => obraChave(o) === obraChave(nome)) || obrasDoEfetivo.find(o => obraChave(o) === obraChave(nome))
-        || obraKeys.find(o => obrasMatch(o, nome)) || obrasDoEfetivo.find(o => obrasMatch(o, nome));
-      return alvo || "SEM OBRA";
-    };
+    const colunaDe = nome => colunaDaObra(nome, obraKeys, all);
     cruzamentoResumo.forEach(l => {
       if (!pivot[l.c]) return;
       const obra = l.c === "APENAS FOLHA" ? colunaDe(l.f) : (l.e && l.e !== "—" ? colunaDe(l.e) : colunaDe(l.f));
@@ -2840,13 +2842,25 @@ function renderRelatorioMaoDeObra() {
 /* -------------------------------------------------------------------------
    MÃO DE OBRA — RELATÓRIO PDF (padrão "EFETIVO DE MÃO DE OBRA CONSOLIDADO LM")
    ------------------------------------------------------------------------- */
-function gerarRelatorioMaoDeObraPDF() {
+async function gerarRelatorioMaoDeObraPDF() {
   if (!requireUnlock()) return;
+  if (cruzamentoResumo === null) { try { cruzamentoResumo = await getCruzamentoResumo(); } catch { cruzamentoResumo = []; } }
   const all = STATE.colaboradores;
   const { obraKeys, pivot } = buildFolhaEfetivoPivot();
 
+  // classificação de cada colaborador: a do último cruzamento (se houver) ou a já aplicada
+  const resumo = cruzamentoResumo && cruzamentoResumo.length ? cruzamentoResumo : null;
+  const classPorId = {};
+  if (resumo) resumo.forEach(l => { if (l.i) classPorId[l.i] = l.c; });
+  const classDe = w => (resumo && classPorId[w.id]) || (w.classificacao || "").toUpperCase();
+
   const byObra = {};
-  all.forEach(w => { (byObra[w.obra || "SEM OBRA"] ||= []).push(w); });
+  all.forEach(w => { (byObra[w.obra || "SEM OBRA"] ||= []).push({ ...w, _classif: classDe(w) }); });
+  // quem está só na folha não existe no efetivo, mas precisa aparecer no relatório (na obra da folha)
+  if (resumo) resumo.filter(l => l.c === "APENAS FOLHA").forEach(l => {
+    const obra = colunaDaObra(l.f, obraKeys, all);
+    (byObra[obra] ||= []).push({ nome: l.n, funcao: l.fu, fornecedor: l.em || "LM", status: "SÓ NA FOLHA", obs: "", _classif: "APENAS FOLHA" });
+  });
   const listaObras = Object.keys(byObra).sort((a, b) => a.localeCompare(b));
 
   const statusColor = (s) => {
@@ -2862,17 +2876,19 @@ function gerarRelatorioMaoDeObraPDF() {
     const items = byObra[obra].slice().sort((a, b) => (a.funcao || "").localeCompare(b.funcao || ""));
     tableRows += `<tr class="grp"><td colspan="5">${escapeHtml(obra)}</td></tr>`;
     items.forEach(w => {
-      const diferente = (w.classificacao || "").toUpperCase() === "FOLHA DIFERENTE";
-      tableRows += `<tr${diferente ? ` class="dif"` : ""}>
-        <td>${escapeHtml(w.funcao || "")}</td>
-        <td>${escapeHtml(w.nome || "")}</td>
-        <td>${escapeHtml(w.fornecedor || "")}</td>
-        <td style="${statusColor(w.status)}">${escapeHtml(w.status || "")}</td>
-        <td>${diferente ? `<strong>FOLHA DIFERENTE</strong>${w.obs ? " · " : ""}` : ""}${escapeHtml(w.obs || "")}</td>
+      const c = w._classif;
+      const bg = CLASSIF_COLORS[c] ? `background:${CLASSIF_COLORS[c]};` : "";
+      tableRows += `<tr class="cl">
+        <td style="${bg}">${escapeHtml(w.funcao || "")}</td>
+        <td style="${bg}">${escapeHtml(w.nome || "")}</td>
+        <td style="${bg}">${escapeHtml(w.fornecedor || "")}</td>
+        <td style="${bg}${statusColor(w.status)}">${escapeHtml(w.status || "")}</td>
+        <td style="${bg}">${c ? `<strong>${escapeHtml(c)}</strong>${w.obs ? " · " : ""}` : ""}${escapeHtml(w.obs || "")}</td>
       </tr>`;
     });
-    const qtdDif = items.filter(w => (w.classificacao || "").toUpperCase() === "FOLHA DIFERENTE").length;
-    tableRows += `<tr class="tot"><td colspan="4"><strong>TOTAL DE COLABORADORES</strong>${qtdDif ? ` &nbsp; <span style="background:${CLASSIF_COLORS["FOLHA DIFERENTE"]};padding:1px 6px;"><strong>${qtdDif} com folha diferente</strong></span>` : ""}</td><td><strong>${items.length}</strong></td></tr>`;
+    const chip = (label, n) => n ? ` &nbsp; <span style="background:${CLASSIF_COLORS[label]};padding:1px 6px;"><strong>${n} ${label.toLowerCase()}</strong></span>` : "";
+    const qtd = label => items.filter(w => w._classif === label).length;
+    tableRows += `<tr class="tot"><td colspan="4"><strong>TOTAL DE COLABORADORES</strong>${chip("FOLHA DIFERENTE", qtd("FOLHA DIFERENTE"))}${chip("APENAS FOLHA", qtd("APENAS FOLHA"))}</td><td><strong>${items.length}</strong></td></tr>`;
   });
 
   const pivotHead = `<th></th>${obraKeys.map(o => `<th>${escapeHtml(o)}</th>`).join("")}<th class="gap"></th><th></th><th>Total Geral</th>`;
@@ -2926,7 +2942,6 @@ function gerarRelatorioMaoDeObraPDF() {
   tr.grp{page-break-after:avoid;}
   tr.grp td{background:#DCEEF6;font-weight:800;text-align:center;}
   tr.tot td{background:#EDEFF2;}
-  tr.dif td{background:#F4A6A6;font-weight:700;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
   .no-print{margin-top:10px;}
   @media print{
     .no-print{display:none;}
@@ -2967,7 +2982,7 @@ function gerarRelatorioMaoDeObraPDF() {
   setTimeout(() => { win.focus(); win.print(); }, 400);
 }
 
-document.getElementById("btn-relatorio-pdf-mo").addEventListener("click", gerarRelatorioMaoDeObraPDF);
+document.getElementById("btn-relatorio-pdf-mo").addEventListener("click", () => { gerarRelatorioMaoDeObraPDF(); });
 
 /* -------------------------------------------------------------------------
    CRUZAMENTO FOLHA (relação do RH) x EFETIVO (planilha semanal)
@@ -3163,7 +3178,7 @@ function computeCruzamento(folhaRegistros, obraMap) {
       linhas.push({
         colaboradorId: null, nome: folhaRec.nome,
         obraEfetivo: "—", obraFolha: folhaRec.obra || "—",
-        obraFolhaRef: obraFolhaResolvida(folhaRec),
+        obraFolhaRef: obraFolhaResolvida(folhaRec), funcao: folhaRec.funcao || "", empresa: folhaRec.empresa || "",
         classificacao: r.classificacao,
         obs: (dup ? "Possível duplicidade — " : "") + r.obs
       });
@@ -3231,7 +3246,7 @@ function renderGruposNaoReconhecidos(folhaRegistros, linhas) {
 
 function renderCruzamento(linhas) {
   pendingCruzamento = linhas;
-  cruzamentoResumo = linhas.filter(l => l.classificacao).map(l => ({ n: l.nome, e: l.obraEfetivo, f: l.obraFolhaRef || l.obraFolha, c: l.classificacao }));
+  cruzamentoResumo = linhas.filter(l => l.classificacao).map(l => ({ i: l.colaboradorId || "", n: l.nome, e: l.obraEfetivo, f: l.obraFolhaRef || l.obraFolha, c: l.classificacao, fu: l.funcao || "", em: l.empresa || "" }));
   setCruzamentoResumo(cruzamentoResumo).catch(err => console.warn("Não consegui salvar o resumo do cruzamento:", err));
   document.getElementById("folha-cruzamento-panel").style.display = "";
   const counts = {};
