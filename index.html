@@ -871,8 +871,11 @@
           </div>
         </div>
         <div class="field">
-          <label>Obra *</label>
-          <input type="text" id="eqf-obra" list="equip-obra-list">
+          <label>Obra <span style="font-weight:400;color:var(--text-dim);">(vazio = SEM OBRA)</span></label>
+          <div style="display:flex;gap:6px;">
+            <input type="text" id="eqf-obra" list="equip-obra-list" style="flex:1;">
+            <button type="button" class="btn btn-ghost btn-sm" id="btn-eqf-sem-obra" title="Tira o equipamento da obra e guarda em SEM OBRA, sem perder as informações">Sem obra</button>
+          </div>
           <datalist id="equip-obra-list"></datalist>
         </div>
         <div class="field">
@@ -2246,6 +2249,7 @@ function renderEquipKanban() {
     list.forEach(w => { const k = w.situacao || "SEM SITUAÇÃO"; (groups[k] ||= []).push(w); });
   } else {
     Object.values(EQUIP_STATE.obras).forEach(o => groups[o.nome] = []);
+    groups["SEM OBRA"] ||= []; // sempre existe: é onde se guarda um equipamento que saiu de uma obra, sem perder as informações dele
     list.forEach(w => { const k = w.obra || "SEM OBRA"; (groups[k] ||= []).push(w); });
   }
 
@@ -2255,7 +2259,7 @@ function renderEquipKanban() {
   } else {
     keys.sort((a, b) => a.localeCompare(b));
     const obraFiltro = document.getElementById("eq-obra").value;
-    if (obraFiltro && keys.includes(obraFiltro)) keys = [obraFiltro];
+    if (obraFiltro && keys.includes(obraFiltro)) keys = obraFiltro === "SEM OBRA" ? [obraFiltro] : [obraFiltro, "SEM OBRA"];
   }
 
   const board = document.getElementById("equip-kanban");
@@ -2329,20 +2333,23 @@ function wireEquipDragDrop() {
       const item = EQUIP_STATE.equipamentos.find(w => w.id === id);
       if (!item) return;
       if (!requireUnlock()) return;
+      let alterado;
       if (equipGroupBy === "situacao") {
         if (item.situacao === group) return;
-        item.situacao = group;
+        alterado = { ...item, situacao: group };
       } else {
-        if (item.obra === group) return;
-        item.obra = group;
+        const novaObra = group === "SEM OBRA" ? "" : group;
+        if ((item.obra || "") === novaObra) return;
+        alterado = { ...item, obra: novaObra };
       }
-      renderEquipKanban();
+      // grava uma cópia (sem mexer no item em memória) pra o Desfazer enxergar o estado anterior
       try {
-        await EquipStore.saveItem(item);
+        await EquipStore.saveItem(alterado);
+        if (equipGroupBy !== "situacao" && alterado.obra === "") toast(`${item.tipo || "Equipamento"} guardado em SEM OBRA (nada foi apagado).`);
       } catch (err) {
         toast("Erro ao salvar: " + err.message, true);
-        await reloadEquip();
       }
+      await reloadEquip();
     });
   });
 }
@@ -3573,6 +3580,7 @@ function openEquipModal(item) {
 }
 
 document.getElementById("btn-add-equip").addEventListener("click", () => openEquipModal(null));
+document.getElementById("btn-eqf-sem-obra").addEventListener("click", () => { document.getElementById("eqf-obra").value = ""; });
 
 /* -------------------------------------------------------------------------
    MÃO DE OBRA — GERENCIAR OBRAS (renomear / criar / excluir)
@@ -4074,7 +4082,7 @@ document.getElementById("btn-save-equip").addEventListener("click", async () => 
   if (!requireUnlock()) return;
   const f = id => document.getElementById(id).value.trim();
   const tipo = f("eqf-tipo"), obra = f("eqf-obra");
-  if (!tipo || !obra) { toast("Preencha ao menos Tipo e Obra.", true); return; }
+  if (!tipo) { toast("Preencha ao menos o Tipo.", true); return; }
   const editId = document.getElementById("modal-equip").dataset.editId;
   const isNew = document.getElementById("modal-equip").dataset.isNew === "1";
   const situacao = f("eqf-situacao");
