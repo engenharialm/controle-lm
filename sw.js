@@ -1,8 +1,9 @@
 // Service worker do Controle LM: deixa o app instalável e abrir sem internet (só a tela; os dados vêm do Firebase).
 // Estratégia: a página e os arquivos próprios usam "rede primeiro" (sempre pegam a versão nova quando há internet)
 // e caem no cache quando está offline. Bibliotecas de CDN e o Firebase passam direto, sem cache aqui.
-const CACHE = "controle-lm-v1";
-const ARQUIVOS = ["./", "index.html", "manifest.webmanifest", "logo-lm.png", "logo-pdca.png", "icon-192.png", "icon-512.png"];
+const CACHE = "controle-lm-v2";
+const ARQUIVOS = ["./", "index.html", "manifest.webmanifest", "logo-lm.png", "logo-pdca.png", "icon-192.png", "icon-512.png",
+  "logo-anim/logo-anim.js", "logo-anim/lm.webp", "logo-anim/p.webp", "logo-anim/pblue.webp", "logo-anim/c.webp", "logo-anim/d.webp", "logo-anim/a.webp", "logo-anim/ring.webp"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(ARQUIVOS)).then(() => self.skipWaiting()));
