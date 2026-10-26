@@ -3178,23 +3178,21 @@ async function gerarRelatorioMaoDeObraPDF() {
 </style>
 </head>
 <body>
-  <table>
+  <div class="header">
+    <div class="header-top">
+      <img src="${logoUrl}" alt="LM">
+      <div class="title">EFETIVO DE MÃO DE OBRA CONSOLIDADO LM<small>Gerado em ${new Date().toLocaleDateString("pt-BR")}</small></div>
+      <img class="logo-pdca" src="${logoPdcaUrl}" alt="PDCA">
+    </div>
+  </div>
+  <div class="pivot-wrap">
+    <table><thead><tr>${pivotHead}</tr></thead><tbody>${pivotRows}${pivotTotalRow}</tbody></table>
+  </div>
+  <table style="margin-top:8px;">
     <colgroup>
       <col style="width:17%"><col style="width:25%"><col style="width:13%"><col style="width:11%"><col style="width:17%"><col style="width:17%">
     </colgroup>
     <thead>
-      <tr class="header-row"><th colspan="6">
-        <div class="header">
-          <div class="header-top">
-            <img src="${logoUrl}" alt="LM">
-            <div class="title">EFETIVO DE MÃO DE OBRA CONSOLIDADO LM<small>Gerado em ${new Date().toLocaleDateString("pt-BR")}</small></div>
-            <img class="logo-pdca" src="${logoPdcaUrl}" alt="PDCA">
-          </div>
-        </div>
-        <div class="pivot-wrap">
-          <table><thead><tr>${pivotHead}</tr></thead><tbody>${pivotRows}${pivotTotalRow}</tbody></table>
-        </div>
-      </th></tr>
       <tr class="colhead-row"><th>Função</th><th>Nome</th><th>Fornecedor</th><th>Status</th><th>Centro de custo</th><th>Observação</th></tr>
     </thead>
     <tbody>${tableRows}</tbody>
