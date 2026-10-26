@@ -765,6 +765,8 @@ try { if (localStorage.getItem("ctrlTema") === "escuro") { document.getElementBy
 
         <div class="section-title">Folha x Efetivo por obra
           <span style="display:flex;gap:8px;">
+            <label style="display:inline-flex;align-items:center;gap:6px;font-size:.78rem;font-weight:500;" title="Última vez que a relação do RH foi compatibilizada com o efetivo (sai no rodapé do relatório em PDF)">Última data de compatibilização
+              <input type="date" id="data-compat" style="padding:4px 6px;"></label>
             <button class="btn btn-ghost btn-sm" id="btn-relatorio-pdf-mo">Gerar Relatório PDF</button>
             <button class="btn btn-accent btn-sm" id="btn-export-relatorio-mo">Exportar Excel</button>
           </span>
@@ -1657,6 +1659,36 @@ async function setCruzamentoResumo(linhas) {
     return withTimeout(() => fs.setDoc(fs.doc(db, "config", "cruzamentoResumo"), { linhas, updatedAt: Date.now() }));
   }
   localStorage.setItem(LS_KEY_CRUZ_RESUMO, JSON.stringify(linhas));
+}
+
+/* Última data de compatibilização com a relação do RH (digitada pelo usuário; sai no rodapé do relatório de Mão de Obra) */
+const LS_KEY_DATA_COMPAT = "consolidadoDataCompat";
+let dataCompatibilizacao = ""; // aaaa-mm-dd
+let dataCompatCarregada = false;
+
+async function carregarDataCompat() {
+  try {
+    if (useFirebase) {
+      dataCompatibilizacao = await withTimeout(async () => {
+        const snap = await fs.getDoc(fs.doc(db, "config", "dataCompatibilizacao"));
+        return snap.exists() ? (snap.data().data || "") : "";
+      });
+    } else {
+      dataCompatibilizacao = localStorage.getItem(LS_KEY_DATA_COMPAT) || "";
+    }
+    dataCompatCarregada = true;
+  } catch (e) { console.warn("Não consegui carregar a data de compatibilização:", e); }
+  const i = document.getElementById("data-compat");
+  if (i) i.value = dataCompatibilizacao;
+}
+
+async function salvarDataCompat(valor) {
+  dataCompatibilizacao = valor || "";
+  if (useFirebase) {
+    await withTimeout(() => fs.setDoc(fs.doc(db, "config", "dataCompatibilizacao"), { data: dataCompatibilizacao, updatedAt: Date.now() }));
+  } else {
+    localStorage.setItem(LS_KEY_DATA_COMPAT, dataCompatibilizacao);
+  }
 }
 
 function cryptoId() { return "id-" + Math.random().toString(36).slice(2) + Date.now().toString(36); }
@@ -3103,6 +3135,10 @@ async function gerarRelatorioMaoDeObraPDF() {
     <td><strong>${grandTotal}</strong></td>
   </tr>`;
 
+  if (!dataCompatCarregada) await carregarDataCompat();
+  const dataCompat = dataCompatibilizacao ? dataCompatibilizacao.split("-").reverse().join("/") : "";
+  const rodapeRh = (dataCompat ? `Última compatibilização com a relação do RH: <strong>${dataCompat}</strong>` : "Data da última compatibilização não informada")
+    + ` &nbsp;·&nbsp; Relatório gerado em ${new Date().toLocaleDateString("pt-BR")}`;
   const logoUrl = new URL("logo-lm.png", location.href).href;
   const logoPdcaUrl = new URL("logo-pdca.png", location.href).href;
   const html = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Efetivo de Mão de Obra LM</title>
@@ -3133,6 +3169,8 @@ async function gerarRelatorioMaoDeObraPDF() {
   tr.grp td{background:#DCEEF6;font-weight:800;text-align:center;}
   tr.tot td{background:#EDEFF2;}
   .no-print{margin-top:10px;}
+  body{padding-bottom:34px;}
+  .rodape-rh{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #999;padding:5px 10px;font-size:9.5px;text-align:center;}
   @media print{
     .no-print{display:none;}
     @page{size:A4 portrait;margin:10mm;}
@@ -3161,6 +3199,7 @@ async function gerarRelatorioMaoDeObraPDF() {
     </thead>
     <tbody>${tableRows}</tbody>
   </table>
+  <div class="rodape-rh">${rodapeRh}</div>
   <button class="no-print" onclick="window.print()" style="padding:10px 16px;font-size:13px;cursor:pointer;">Imprimir / Salvar PDF</button>
 </body></html>`;
 
@@ -4759,6 +4798,14 @@ document.addEventListener("keydown", (e) => {
 if ("serviceWorker" in navigator && location.protocol !== "file:") {
   navigator.serviceWorker.register("sw.js").catch(err => console.warn("Service worker não registrado:", err));
 }
+/* última data de compatibilização (campo na tela de Relatórios > Mão de Obra) */
+carregarDataCompat();
+document.getElementById("data-compat").addEventListener("change", async (e) => {
+  if (!requireUnlock()) { e.target.value = dataCompatibilizacao; return; }
+  try { await salvarDataCompat(e.target.value); toast(e.target.value ? "Data de compatibilização salva." : "Data de compatibilização removida."); }
+  catch (err) { toast("Erro ao salvar a data: " + err.message, true); }
+});
+
 /* tema claro / escuro (escolha salva neste navegador) */
 function aplicarTema(escuro) {
   document.getElementById("tema-lm").media = escuro ? "all" : "not all";
