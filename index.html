@@ -2653,7 +2653,6 @@ function renderEquipRelatorio() {
 }
 
 document.getElementById("btn-export-relatorio").addEventListener("click", async () => {
-  if (!requireUnlock()) return;
   const btn = document.getElementById("btn-export-relatorio");
   btn.disabled = true;
   try {
@@ -2825,7 +2824,6 @@ async function exportRelatorioEquipamentosExcel() {
 }
 
 document.getElementById("btn-export-relatorio-mo").addEventListener("click", () => {
-  if (!requireUnlock()) return;
   exportMaoDeObraExcel();
 });
 
@@ -2875,7 +2873,6 @@ function situacaoCorHex(situacao) {
 }
 
 function gerarRelatorioPDF() {
-  if (!requireUnlock()) return;
   const { total, proprios, locados, contagem, obras, tipos, pct, proprioLabel } = buildEquipRelatorioData();
   const situColor = (s) => { const c = situacaoCorHex(s); return c ? `color:#${c};font-weight:700;` : ""; };
 
@@ -3062,7 +3059,6 @@ function obsRelatorio(w, c) {
 }
 
 async function gerarRelatorioMaoDeObraPDF() {
-  if (!requireUnlock()) return;
   if (cruzamentoResumo === null) { try { cruzamentoResumo = await getCruzamentoResumo(); } catch { cruzamentoResumo = []; } }
   const all = STATE.colaboradores;
   const { obraKeys, pivot } = buildFolhaEfetivoPivot();
@@ -3113,7 +3109,8 @@ async function gerarRelatorioMaoDeObraPDF() {
     tableRows += `<tr class="tot"><td colspan="5"><strong>TOTAL DE COLABORADORES</strong>${chip("FOLHA DIFERENTE", qtd("FOLHA DIFERENTE"))}${chip("APENAS FOLHA", qtd("APENAS FOLHA"))}</td><td><strong>${items.length}</strong></td></tr>`;
   });
 
-  const pivotHead = `<th></th>${obraKeys.map(o => `<th>${escapeHtml(o)}</th>`).join("")}<th class="gap"></th><th></th><th>Total Geral</th>`;
+  const nomeCurto = o => o.replace(/^OBRA\s*-\s*/i, ""); // "OBRA - CONTAGEM" -> "CONTAGEM": cabe melhor nas colunas estreitas
+  const pivotHead = `<th></th>${obraKeys.map(o => `<th>${escapeHtml(nomeCurto(o))}</th>`).join("")}<th class="gap"></th><th></th><th>Total Geral</th>`;
   const pivotRows = CLASSIF_LABELS.map(label => {
     const rowTotal = obraKeys.reduce((s, o) => s + (pivot[label][o] || 0), 0);
     const bg = CLASSIF_COLORS[label] || "#EEE";
@@ -3159,8 +3156,11 @@ async function gerarRelatorioMaoDeObraPDF() {
   thead .colhead-row th{background:#0B83B2;color:#fff;text-transform:uppercase;font-size:9.5px;white-space:nowrap;}
   .pivot-wrap{padding:8px 14px 10px;}
   .pivot-wrap table{margin-bottom:0;}
-  .pivot-wrap th{background:#0B83B2;color:#000;font-size:9px;white-space:nowrap;text-align:center;}
-  .pivot-wrap td{font-size:9.5px;text-align:center;border:1px solid #999;}
+  .pivot-wrap th{background:#0B83B2;color:#000;font-size:7.5px;line-height:1.15;padding:3px 2px;white-space:normal;overflow-wrap:anywhere;word-break:break-word;text-align:center;vertical-align:middle;}
+  .pivot-wrap th:first-child{width:13%;}
+  .pivot-wrap th:nth-last-child(2){width:13%;}
+  .pivot-wrap th:last-child{width:8%;}
+  .pivot-wrap td{font-size:9px;text-align:center;border:1px solid #999;padding:3px 2px;}
   .pivot-wrap td:first-child{text-align:left;}
   .pivot-wrap th.gap,.pivot-wrap td.gap{border:none;background:none;padding:0;width:14px;}
   .pivot-wrap tr.tot td{background:#D9D9D9;}
@@ -4667,7 +4667,6 @@ function exportMaoDeObraExcel() {
 }
 
 document.getElementById("btn-export").addEventListener("click", () => {
-  if (!requireUnlock()) return;
   if (currentModule === "equipamentos") exportEquipamentosExcel();
   else exportMaoDeObraExcel();
 });
