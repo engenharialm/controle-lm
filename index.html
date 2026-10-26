@@ -877,7 +877,7 @@ try { if (localStorage.getItem("ctrlTema") === "escuro") { document.getElementBy
           <input type="text" id="w-admissao" placeholder="dd/mm/aaaa">
         </div>
         <div class="field">
-          <label>Tipo / Fornecedor</label>
+          <label>Fornecedor</label>
           <input type="text" id="w-fornecedor">
         </div>
         <div class="field">
@@ -3604,7 +3604,7 @@ function limparNomeObraFolha(s) {
 }
 
 function exportarBackupColaboradores(lista) {
-  const rows = [["COD.","OBRA","FUNÇÃO","NÍVEL","NOME","ADMISSÃO","TIPO / FORNECEDOR","STATUS","OBSERVAÇÃO","CLASSIFICAÇÃO"]];
+  const rows = [["COD.","OBRA","FUNÇÃO","NÍVEL","NOME","ADMISSÃO","FORNECEDOR","STATUS","OBSERVAÇÃO","CLASSIFICAÇÃO"]];
   lista.forEach(w => rows.push([w.cod||"", w.obra||"", w.funcao||"", w.nivel||"", w.nome||"", w.admissao||"", w.fornecedor||"", w.status||"", w.obs||"", w.classificacao||""]));
   const ws = XLSX.utils.aoa_to_sheet(rows);
   const wb = XLSX.utils.book_new();
@@ -4651,7 +4651,7 @@ function exportEquipamentosExcel() {
 }
 
 function exportMaoDeObraExcel() {
-  const rows = [["COD.","OBRA","FUNÇÃO","NÍVEL","NOME","ADMISSÃO","TIPO / FORNECEDOR","OBRA (COD. SIENG)","FRENTE SERVIÇO","STATUS","OBSERVAÇÃO"]];
+  const rows = [["COD.","OBRA","FUNÇÃO","NÍVEL","NOME","ADMISSÃO","FORNECEDOR","OBRA (COD. SIENG)","FRENTE SERVIÇO","STATUS","OBSERVAÇÃO"]];
   const byObra = {};
   STATE.colaboradores.forEach(w => { (byObra[w.obra || "SEM OBRA"] ||= []).push(w); });
   Object.entries(byObra).sort(([a],[b]) => a.localeCompare(b)).forEach(([obra, list]) => {
