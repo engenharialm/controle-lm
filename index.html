@@ -517,6 +517,7 @@ try { if (localStorage.getItem("ctrlTema") === "escuro") { document.getElementBy
 <div id="app">
 
   <header>
+    <a class="lm-portal" href="https://engenharialm.github.io/portal-lm/" title="Voltar ao Portal LM"><i>←</i> Portal</a>
     <div class="brand">
       <img class="logo" id="brand-logo" src="logo-lm.png" alt="LM">
       <div>
@@ -545,6 +546,7 @@ try { if (localStorage.getItem("ctrlTema") === "escuro") { document.getElementBy
     <button data-module="maodeobra" class="active">👷 Mão de Obra</button>
     <button data-module="equipamentos">🚜 Equipamentos</button>
     <button data-module="relatorios">📊 Relatórios</button>
+    <button data-module="historico">🕘 Histórico</button>
   </nav>
 
   <div id="mo-body">
@@ -820,6 +822,43 @@ try { if (localStorage.getItem("ctrlTema") === "escuro") { document.getElementBy
     </section>
   </div>
 
+  <!-- HISTÓRICO DE MOVIMENTAÇÕES (Mão de Obra e Equipamentos) -->
+  <div id="historico-body" style="display:none;">
+    <main>
+      <div class="panel">
+        <div class="toolbar">
+          <input type="text" id="h-busca" placeholder="Buscar por nome, obra, detalhe...">
+          <select id="h-periodo">
+            <option value="7">Últimos 7 dias</option>
+            <option value="30" selected>Últimos 30 dias</option>
+            <option value="90">Últimos 90 dias</option>
+            <option value="365">Último ano</option>
+          </select>
+          <select id="h-dominio">
+            <option value="">Mão de obra e equipamentos</option>
+            <option value="mo">Só mão de obra</option>
+            <option value="equip">Só equipamentos</option>
+          </select>
+          <select id="h-obra"><option value="">Todas as obras</option></select>
+          <select id="h-tipo"><option value="">Todos os tipos</option></select>
+          <div class="spacer"></div>
+          <span class="toolbar-count" id="h-count"></span>
+          <button class="btn btn-ghost btn-sm" id="btn-h-autor" title="Nome que fica gravado nas movimentações feitas neste aparelho"></button>
+          <button class="btn btn-accent btn-sm" id="btn-h-export">Exportar Excel</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr>
+              <th>Data</th><th>Tipo</th><th>Colaborador / equipamento</th><th>De</th><th>Para</th><th>Detalhes</th><th>Origem</th><th>Por</th>
+            </tr></thead>
+            <tbody id="h-table"></tbody>
+          </table>
+        </div>
+      </div>
+      <p style="font-size:.72rem;color:var(--text-faint);margin-top:10px;">O histórico é gravado automaticamente a cada mudança (arrastar no quadro, editar, excluir, importar planilha, equipes e obras). Ele não pode ser editado pela tela.</p>
+    </main>
+  </div>
+
   <footer>Controle de Mão de Obra · dados salvos automaticamente · <span id="footer-mode">modo local</span></footer>
 </div>
 
@@ -911,6 +950,7 @@ try { if (localStorage.getItem("ctrlTema") === "escuro") { document.getElementBy
     <div class="modal-foot">
       <button class="btn btn-ghost" data-close>Cancelar</button>
       <button class="btn btn-ghost" id="btn-delete-worker" style="display:none;margin-right:auto;color:var(--danger);">Excluir</button>
+      <button class="btn btn-ghost" id="btn-hist-worker" style="display:none;">🕘 Histórico</button>
       <button class="btn btn-accent" id="btn-save-worker">Salvar</button>
     </div>
   </div>
@@ -1153,8 +1193,25 @@ try { if (localStorage.getItem("ctrlTema") === "escuro") { document.getElementBy
       </div>
     </div>
     <div class="modal-foot">
+      <button class="btn btn-ghost" id="btn-hist-equip" style="display:none;margin-right:auto;">🕘 Histórico</button>
       <button class="btn btn-ghost" data-close>Cancelar</button>
       <button class="btn btn-accent" id="btn-save-equip">Salvar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: HISTÓRICO DE UM COLABORADOR / EQUIPAMENTO -->
+<div class="modal-backdrop" id="modal-hist">
+  <div class="modal">
+    <div class="modal-head">
+      <h2 id="hist-modal-title">Histórico</h2>
+      <button class="modal-close" data-hist-close>&times;</button>
+    </div>
+    <div class="modal-body">
+      <div id="hist-modal-body"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-hist-close>Voltar</button>
     </div>
   </div>
 </div>
@@ -1498,7 +1555,7 @@ async function doUndo() {
   refreshUndoBtn();
   if (!entry) return;
   try {
-    await entry.run();
+    await comOrigem("Desfazer", entry.run);
     toast(`Desfeito: ${entry.label}`);
     await entry.reloader();
   } catch (err) {
@@ -1578,6 +1635,224 @@ function addUndoTo(store, getItems, reloader, { semDesfazerExclusaoComFoto = fal
   };
 }
 
+/* -------------------------------------------------------------------------
+   HISTÓRICO DE MOVIMENTAÇÕES — cada gravação dos Stores deixa uma linha na
+   coleção "movimentacoes" (só acrescenta; a tela não edita nem apaga).
+   Envolve os Stores ANTES do Desfazer, para que desfazer também fique registrado.
+   ------------------------------------------------------------------------- */
+const HIST_COL = "movimentacoes";
+const LS_KEY_HIST = "consolidadoMovimentacoes";
+const LS_KEY_AUTOR = "ctrlAutorHistorico";
+let HIST_ORIGEM = null;   // origem forçada pela tela (ex.: "Quadro", "Desfazer")
+let HIST_LOTE = null;     // durante importações: junta as linhas e grava de uma vez
+
+const HIST_CAMPOS = {
+  mo: { nome: "Nome", obra: "Obra", local: "Local/Equipe", funcao: "Função", nivel: "Nível", cod: "Código",
+        admissao: "Admissão", fornecedor: "Fornecedor", sieng: "Cód. SIENG", frente: "Frente", status: "Status", obs: "Observação" },
+  equip: { tipo: "Tipo", obra: "Obra", situacao: "Situação", marca: "Marca", modelo: "Modelo", operador: "Operador",
+           placa: "Placa", proprietario: "Proprietário", locacao: "Locação", valor: "Valor", tag: "TAG", renavam: "Renavam",
+           chassis: "Chassis", ano: "Ano", sieng: "Cód. SIENG", frente: "Frente", obs: "Observação",
+           horimetroAtual: "Horímetro", horimetroManutencao: "Horímetro manutenção", motivoManutencao: "Motivo manutenção",
+           previsaoDevolucao: "Previsão devolução", statusMecanica: "Status mecânica", manutencaoItens: "Itens de manutenção" }
+};
+// Na importação semanal só interessam as mudanças que contam como movimentação.
+const HIST_CAMPOS_IMPORT = { mo: ["funcao", "status", "local"], equip: ["situacao", "operador"] };
+
+function normHist(s) { return (s ?? "").toString().normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/\s+/g, " ").trim(); }
+function histNome(dominio, i) {
+  if (!i) return "";
+  if (dominio === "mo") return i.nome || "";
+  const base = [i.tipo, i.marca, i.modelo].filter(Boolean).join(" ");
+  const id = i.placa || i.tag || i.chassis || "";
+  return id ? `${base} — ${id}` : base;
+}
+// Chave estável da pessoa/equipamento (a importação semanal recria os registros com ids novos).
+function histChave(dominio, i) {
+  if (dominio === "mo") return "mo:" + normHist(i.nome);
+  const id = i.placa || i.tag || i.chassis || i.renavam;
+  return "eq:" + normHist(id || [i.tipo, i.marca, i.modelo].join(" "));
+}
+function histValor(campo, v) {
+  if (campo === "manutencaoItens") return Array.isArray(v) && v.length ? `${v.length} item(ns)` : "nenhum";
+  const s = (v ?? "").toString().trim();
+  return s || "vazio";
+}
+function histDiferencas(dominio, antes, depois, campos) {
+  const labels = HIST_CAMPOS[dominio];
+  return (campos || Object.keys(labels))
+    .filter(c => c !== "obra" && c in depois && JSON.stringify(depois[c] ?? "") !== JSON.stringify(antes[c] ?? ""))
+    .map(c => `${labels[c]}: ${histValor(c, antes[c])} → ${histValor(c, depois[c])}`);
+}
+function histTipoObra(de, para) {
+  if (!de && para) return "Entrada";
+  if (de && !para) return "Saída";
+  return "Transferência";
+}
+
+function getAutorHist(perguntar = true) {
+  let nome = "";
+  try { nome = localStorage.getItem(LS_KEY_AUTOR) || ""; } catch (e) {}
+  if (!nome && perguntar) {
+    nome = (prompt("Seu nome (fica gravado no histórico das movimentações feitas neste aparelho):") || "").trim();
+    if (nome) { try { localStorage.setItem(LS_KEY_AUTOR, nome); } catch (e) {} }
+  }
+  return nome;
+}
+
+async function gravarHistorico(linhas) {
+  if (!linhas.length) return;
+  const autor = getAutorHist();
+  const ts = Date.now();
+  const docs = linhas.map(l => ({ timestamp: ts, autor, detalhe: "", de: "", para: "", ...l }));
+  try {
+    if (useFirebase) {
+      await withTimeout(async () => {
+        for (let i = 0; i < docs.length; i += 450) {
+          const batch = fs.writeBatch(db);
+          docs.slice(i, i + 450).forEach(d => batch.set(fs.doc(fs.collection(db, HIST_COL)), d));
+          await batch.commit();
+        }
+      }, 30000);
+    } else {
+      let arr = [];
+      try { arr = JSON.parse(localStorage.getItem(LS_KEY_HIST) || "[]"); } catch (e) {}
+      docs.forEach(d => arr.push({ id: cryptoId(), ...d }));
+      localStorage.setItem(LS_KEY_HIST, JSON.stringify(arr));
+    }
+    HIST_CACHE = null;
+  } catch (err) {
+    console.warn("Não consegui gravar no histórico:", err);
+    toast("A alteração foi salva, mas não consegui registrar no histórico: " + err.message, true);
+  }
+}
+
+function emitirHistorico(linhas) {
+  if (!linhas.length) return;
+  if (HIST_LOTE) { HIST_LOTE.push(...linhas); return; }
+  return gravarHistorico(linhas);
+}
+
+// Junta as linhas de uma importação inteira: quem saiu de uma obra e entrou em outra vira uma Transferência só.
+async function comLoteHistorico(origem, fn) {
+  const anterior = HIST_ORIGEM;
+  HIST_LOTE = []; HIST_ORIGEM = origem;
+  try {
+    return await fn();
+  } finally {
+    const linhas = HIST_LOTE; HIST_LOTE = null; HIST_ORIGEM = anterior;
+    const chegadas = new Set(linhas.filter(l => l.tipo !== "Saída").map(l => l.dominio + "|" + l.chave + "|" + l.de));
+    await gravarHistorico(linhas.filter(l => !(l.tipo === "Saída" && l.detalhe === "não veio na planilha" && chegadas.has(l.dominio + "|" + l.chave + "|" + l.de))));
+  }
+}
+
+async function comOrigem(origem, fn) {
+  const anterior = HIST_ORIGEM;
+  HIST_ORIGEM = origem;
+  try { return await fn(); } finally { HIST_ORIGEM = anterior; }
+}
+
+function addHistoricoTo(store, dominio, getItems) {
+  const orig = {
+    saveItem: store.saveItem, deleteItem: store.deleteItem, bulkSetObra: store.bulkSetObra,
+    bulkSetLocal: store.bulkSetLocal, renameObra: store.renameObra,
+    deleteObraRecords: store.deleteObraRecords, replaceObra: store.replaceObra
+  };
+  const find = (id) => getItems().find(i => i.id === id);
+  const linha = (i, extra) => ({ dominio, chave: histChave(dominio, i), nome: histNome(dominio, i), ...extra });
+
+  store.saveItem = async (rec) => {
+    const prev = rec.id ? find(rec.id) : null;
+    const antes = prev ? { ...prev } : null;
+    const res = await orig.saveItem(rec);
+    const origem = HIST_ORIGEM || "Cadastro";
+    if (!antes) {
+      emitirHistorico([linha(rec, { tipo: "Entrada", para: rec.obra || "", detalhe: origem === "Desfazer" ? "exclusão desfeita" : "novo cadastro", origem })]);
+    } else {
+      const depois = { ...antes, ...rec };
+      const difs = histDiferencas(dominio, antes, depois);
+      const mudouObra = (antes.obra || "") !== (depois.obra || "");
+      if (mudouObra) emitirHistorico([linha(depois, { tipo: histTipoObra(antes.obra, depois.obra), de: antes.obra || "", para: depois.obra || "", detalhe: difs.join("; "), origem })]);
+      else if (difs.length) emitirHistorico([linha(depois, { tipo: "Alteração", de: antes.obra || "", para: depois.obra || "", detalhe: difs.join("; "), origem })]);
+    }
+    return res;
+  };
+
+  store.deleteItem = async (id) => {
+    const prev = find(id);
+    const antes = prev ? { ...prev } : null;
+    const res = await orig.deleteItem(id);
+    if (antes) emitirHistorico([linha(antes, { tipo: "Exclusão", de: antes.obra || "", detalhe: "excluído do cadastro", origem: HIST_ORIGEM || "Cadastro" })]);
+    return res;
+  };
+
+  store.bulkSetObra = async (ids, obraName) => {
+    const antes = ids.map(find).filter(Boolean).map(i => ({ ...i }));
+    const res = await orig.bulkSetObra(ids, obraName);
+    const origem = HIST_ORIGEM || "Quadro";
+    emitirHistorico(antes.filter(i => (i.obra || "") !== (obraName || "")).map(i =>
+      linha(i, { tipo: histTipoObra(i.obra, obraName), de: i.obra || "", para: obraName || "", detalhe: i.local ? `com a equipe ${i.local}` : "", origem })));
+    return res;
+  };
+
+  store.bulkSetLocal = async (ids, localName) => {
+    const antes = ids.map(find).filter(Boolean).map(i => ({ ...i }));
+    const res = await orig.bulkSetLocal(ids, localName);
+    const origem = HIST_ORIGEM || "Equipe de asfalto";
+    emitirHistorico(antes.filter(i => (i.local || "") !== (localName || "")).map(i =>
+      linha(i, { tipo: "Alteração", de: i.obra || "", para: i.obra || "", detalhe: `Local/Equipe: ${histValor("local", i.local)} → ${histValor("local", localName)}`, origem })));
+    return res;
+  };
+
+  store.renameObra = async (oldName, newName) => {
+    const res = await orig.renameObra(oldName, newName);
+    emitirHistorico([{ dominio, chave: "obra:" + normHist(oldName), nome: oldName, tipo: "Obra renomeada", de: oldName, para: newName,
+      detalhe: `${getItems().filter(i => i.obra === oldName).length} registro(s) passaram para o novo nome`, origem: HIST_ORIGEM || "Gerenciar obras" }]);
+    return res;
+  };
+
+  store.deleteObraRecords = async (obraName) => {
+    const itens = getItems().filter(i => i.obra === obraName).map(i => ({ ...i }));
+    const res = await orig.deleteObraRecords(obraName);
+    const origem = HIST_ORIGEM || "Gerenciar obras";
+    emitirHistorico([
+      { dominio, chave: "obra:" + normHist(obraName), nome: obraName, tipo: "Obra excluída", de: obraName, detalhe: `${itens.length} registro(s) apagados`, origem },
+      ...itens.map(i => linha(i, { tipo: "Exclusão", de: obraName, detalhe: "obra excluída", origem }))
+    ]);
+    return res;
+  };
+
+  // Importação: compara a lista antiga da obra com a nova, pelo nome (pessoas) ou placa/TAG (equipamentos).
+  store.replaceObra = async (obraName, records, meta) => {
+    const todos = getItems().map(i => ({ ...i }));
+    const antigosDaObra = new Map(todos.filter(i => (i.obra || "") === obraName).map(i => [histChave(dominio, i), i]));
+    const res = await orig.replaceObra(obraName, records, meta);
+    const origem = HIST_ORIGEM || "Importação";
+    const linhas = [];
+    const novas = new Set();
+    for (const r of records) {
+      const k = histChave(dominio, r);
+      novas.add(k);
+      const antigo = antigosDaObra.get(k) || todos.find(i => histChave(dominio, i) === k);
+      if (!antigo) {
+        linhas.push(linha(r, { tipo: "Entrada", para: obraName, detalhe: "apareceu na planilha", origem }));
+      } else if ((antigo.obra || "") !== obraName) {
+        const difs = histDiferencas(dominio, antigo, r, HIST_CAMPOS_IMPORT[dominio]);
+        linhas.push(linha(r, { tipo: histTipoObra(antigo.obra, obraName), de: antigo.obra || "", para: obraName, detalhe: difs.join("; "), origem }));
+      } else {
+        const difs = histDiferencas(dominio, antigo, r, HIST_CAMPOS_IMPORT[dominio]);
+        if (difs.length) linhas.push(linha(r, { tipo: "Alteração", de: obraName, para: obraName, detalhe: difs.join("; "), origem }));
+      }
+    }
+    for (const [k, i] of antigosDaObra) {
+      if (!novas.has(k)) linhas.push(linha(i, { tipo: "Saída", de: obraName, detalhe: "não veio na planilha", origem }));
+    }
+    emitirHistorico(linhas);
+    return res;
+  };
+}
+
+addHistoricoTo(Store, "mo", () => STATE.colaboradores);
+addHistoricoTo(EquipStore, "equip", () => EQUIP_STATE.equipamentos);
 addUndoTo(Store, () => STATE.colaboradores, () => reload());
 addUndoTo(EquipStore, () => EQUIP_STATE.equipamentos, () => reloadEquip(), { semDesfazerExclusaoComFoto: true });
 
@@ -1753,12 +2028,19 @@ function switchModule(mod) {
   const isRelatorios = mod === "relatorios";
   document.getElementById("mo-body").style.display = (mod === "maodeobra") ? "" : "none";
   document.getElementById("equip-body").style.display = isEquip ? "" : "none";
+  const isHistorico = mod === "historico";
   document.getElementById("relatorios-body").style.display = isRelatorios ? "" : "none";
-  document.getElementById("btn-import").style.display = isRelatorios ? "none" : "";
-  document.getElementById("btn-export").style.display = isRelatorios ? "none" : "";
+  document.getElementById("historico-body").style.display = isHistorico ? "" : "none";
+  document.getElementById("btn-import").style.display = (isRelatorios || isHistorico) ? "none" : "";
+  document.getElementById("btn-export").style.display = (isRelatorios || isHistorico) ? "none" : "";
   document.getElementById("btn-import").textContent = isEquip ? "Importar planilha de equipamentos" : "Importar planilha semanal";
+  if (isHistorico) {
+    document.getElementById("brand-title").textContent = "Histórico de movimentações";
+    document.getElementById("brand-sub").textContent = "LM CONSTRUTORA — EQUIPES E EQUIPAMENTOS";
+    carregarHistorico();
+    return;
+  }
   if (isRelatorios) {
-    document.getElementById("brand-title").textContent = "Relatórios";
     document.getElementById("brand-sub").textContent = "LM CONSTRUTORA — RELATÓRIOS GERENCIAIS";
   } else {
     document.getElementById("brand-title").textContent = isEquip ? "Controle de Equipamentos" : "Controle de Mão de Obra";
@@ -2019,7 +2301,7 @@ document.getElementById("turma-modal-body").addEventListener("click", async (e) 
   if (btn.dataset.turmaEdit) { closeModals(); openWorkerModal(w); return; }
   if (!requireUnlock()) return;
   if (btn.dataset.turmaOut) {
-    await Store.saveItem({ ...w, local: "" });
+    await comOrigem("Quadro", () => Store.saveItem({ ...w, local: "" }));
     toast(`${w.nome} saiu da equipe.`);
   } else {
     if (!confirm(`Excluir ${w.nome} do consolidado?`)) return;
@@ -2089,7 +2371,7 @@ function wireMoDragDrop() {
       const membro = STATE.colaboradores.find(w => w.local === localKey);
       if (!pessoa || !membro || pessoa.local === localKey) return;
       try {
-        await Store.saveItem({ ...pessoa, local: localKey, obra: membro.obra || "" });
+        await comOrigem("Quadro", () => Store.saveItem({ ...pessoa, local: localKey, obra: membro.obra || "" }));
         toast(`${pessoa.nome} entrou na equipe "${localKey}".`);
         await reload();
       } catch (err) {
@@ -2126,7 +2408,7 @@ function wireMoDragDrop() {
         const item = STATE.colaboradores.find(w => w.id === payload.id);
         if (!item || (item.obra || "SEM OBRA") === group) return;
         try {
-          await Store.saveItem({ ...item, obra: group });
+          await comOrigem("Quadro", () => Store.saveItem({ ...item, obra: group }));
           toast(`${item.nome} movido para ${group}.`);
           await reload();
         } catch (err) {
@@ -2548,7 +2830,7 @@ function wireEquipDragDrop() {
       }
       // grava uma cópia (sem mexer no item em memória) pra o Desfazer enxergar o estado anterior
       try {
-        await EquipStore.saveItem(alterado);
+        await comOrigem("Quadro", () => EquipStore.saveItem(alterado));
         if (equipGroupBy !== "situacao" && alterado.obra === "") toast(`${item.tipo || "Equipamento"} guardado em SEM OBRA (nada foi apagado).`);
       } catch (err) {
         toast("Erro ao salvar: " + err.message, true);
@@ -3644,9 +3926,11 @@ document.getElementById("btn-recriar-do-rh").addEventListener("click", async () 
       (byObra[obraResolvida] ||= []).push(rec);
     });
 
-    for (const [obra, list] of Object.entries(byObra)) {
-      await Store.replaceObra(obra, list, {});
-    }
+    await comLoteHistorico("Recriação a partir do RH", async () => {
+      for (const [obra, list] of Object.entries(byObra)) {
+        await Store.replaceObra(obra, list, {});
+      }
+    });
     await Store.addImportLog({
       fileName: "Recriação a partir da relação do RH (substituiu tudo)",
       obras: Object.keys(byObra).filter(o => byObra[o].length),
@@ -3755,6 +4039,7 @@ function openEquipModal(item) {
   const id = item?.id || novoEquipId();
   document.getElementById("modal-equip").dataset.editId = id;
   document.getElementById("modal-equip").dataset.isNew = item ? "" : "1";
+  document.getElementById("btn-hist-equip").style.display = item ? "" : "none";
   equipFotoPending = null;
   equipFotoModalId = id;
   renderEquipFotoPreview(null);
@@ -4255,7 +4540,7 @@ document.getElementById("btn-confirmar-import-fotos").addEventListener("click", 
 
     let comFoto = 0;
     UNDO_SUPPRESS++;
-    try {
+    try { await comLoteHistorico("Importação com fotos: " + (pendingImportFotos.fileName || "planilha"), async () => {
       for (const rec of pendingImportFotos.records) {
         const id = novoEquipId();
         await EquipStore.saveItem({
@@ -4271,7 +4556,7 @@ document.getElementById("btn-confirmar-import-fotos").addEventListener("click", 
           if (dataUrl) { await setEquipFoto(id, dataUrl); comFoto++; }
         }
       }
-    } finally { UNDO_SUPPRESS--; }
+    }); } finally { UNDO_SUPPRESS--; }
     await EquipStore.createEmptyObra(obra);
     await EquipStore.addImportLog({ fileName: pendingImportFotos.fileName, obras: [obra], totalRegistros: pendingImportFotos.records.length });
 
@@ -4609,9 +4894,11 @@ document.getElementById("btn-confirm-import").addEventListener("click", async ()
   btn.disabled = true; btn.textContent = "Importando...";
   try {
     const entries = Object.entries(pendingImport.byObra);
-    for (const [obra, list] of entries) {
-      await targetStore.replaceObra(obra, list, {});
-    }
+    await comLoteHistorico("Importação: " + (pendingImport.fileName || "planilha"), async () => {
+      for (const [obra, list] of entries) {
+        await targetStore.replaceObra(obra, list, {});
+      }
+    });
     await targetStore.addImportLog({
       fileName: pendingImport.fileName,
       obras: entries.map(([o]) => o),
@@ -4689,6 +4976,7 @@ function openWorkerModal(worker) {
   f("w-obs").value = worker?.obs || "";
   document.getElementById("modal-worker").dataset.editId = worker?.id || "";
   document.getElementById("btn-delete-worker").style.display = worker?.id ? "" : "none";
+  document.getElementById("btn-hist-worker").style.display = worker?.id ? "" : "none";
   document.getElementById("modal-worker").classList.add("open");
 }
 
@@ -4755,6 +5043,151 @@ document.querySelectorAll("#mo-body nav.tabs button").forEach(btn => {
 document.querySelectorAll("#f-busca, #f-obra, #f-status, #f-funcao").forEach(el => {
   el.addEventListener("input", renderConsolidado);
   el.addEventListener("change", renderConsolidado);
+});
+
+/* -------------------------------------------------------------------------
+   HISTÓRICO — tela (aba 🕘 Histórico) e histórico de um colaborador/equipamento
+   ------------------------------------------------------------------------- */
+let HIST_CACHE = null; // { dias, linhas }
+
+async function buscarHistorico({ desde = 0, chave = null } = {}) {
+  if (useFirebase) {
+    return withTimeout(async () => {
+      const col = fs.collection(db, HIST_COL);
+      const q = chave ? fs.query(col, fs.where("chave", "==", chave))
+                      : fs.query(col, fs.where("timestamp", ">=", desde), fs.orderBy("timestamp", "desc"));
+      const snap = await fs.getDocs(q);
+      return snap.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => b.timestamp - a.timestamp);
+    });
+  }
+  let arr = [];
+  try { arr = JSON.parse(localStorage.getItem(LS_KEY_HIST) || "[]"); } catch (e) {}
+  return arr.filter(l => chave ? l.chave === chave : l.timestamp >= desde).sort((a, b) => b.timestamp - a.timestamp);
+}
+
+function histDataHora(ts) {
+  const d = new Date(ts);
+  return d.toLocaleDateString("pt-BR") + " " + d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+const HIST_TIPO_COR = { "Entrada": "st-mob", "Saída": "st-saida", "Exclusão": "st-saida", "Transferência": "st-ferias", "Alteração": "st-outro", "Obra renomeada": "st-afastado", "Obra excluída": "st-saida" };
+function histBadge(tipo) { return `<span class="badge ${HIST_TIPO_COR[tipo] || "st-outro"}">${escapeHtml(tipo)}</span>`; }
+function histDominioIcone(d) { return d === "equip" ? "🚜" : "👷"; }
+
+function atualizarBotaoAutor() {
+  const nome = getAutorHist(false);
+  document.getElementById("btn-h-autor").textContent = nome ? `Registrando como: ${nome}` : "Informar meu nome";
+}
+
+async function carregarHistorico() {
+  atualizarBotaoAutor();
+  const dias = Number(document.getElementById("h-periodo").value) || 30;
+  if (!HIST_CACHE || HIST_CACHE.dias !== dias) {
+    document.getElementById("h-table").innerHTML = `<tr><td colspan="8" class="empty-state">Carregando histórico...</td></tr>`;
+    try {
+      const linhas = await buscarHistorico({ desde: Date.now() - dias * 86400000 });
+      HIST_CACHE = { dias, linhas };
+    } catch (err) {
+      console.error(err);
+      document.getElementById("h-table").innerHTML = `<tr><td colspan="8" class="empty-state">Não consegui carregar o histórico: ${escapeHtml(err.message)}</td></tr>`;
+      return;
+    }
+  }
+  const linhas = HIST_CACHE.linhas;
+  const preencher = (id, valores, rotuloTodos) => {
+    const sel = document.getElementById(id);
+    const atual = sel.value;
+    sel.innerHTML = `<option value="">${rotuloTodos}</option>` + valores.map(v => `<option>${escapeHtml(v)}</option>`).join("");
+    if (valores.includes(atual)) sel.value = atual;
+  };
+  preencher("h-obra", [...new Set(linhas.flatMap(l => [l.de, l.para]).filter(Boolean))].sort(), "Todas as obras");
+  preencher("h-tipo", [...new Set(linhas.map(l => l.tipo))].sort(), "Todos os tipos");
+  renderHistorico();
+}
+
+function historicoFiltrado() {
+  if (!HIST_CACHE) return [];
+  const busca = normHist(document.getElementById("h-busca").value);
+  const dominio = document.getElementById("h-dominio").value;
+  const obra = document.getElementById("h-obra").value;
+  const tipo = document.getElementById("h-tipo").value;
+  return HIST_CACHE.linhas.filter(l =>
+    (!dominio || l.dominio === dominio) &&
+    (!obra || l.de === obra || l.para === obra) &&
+    (!tipo || l.tipo === tipo) &&
+    (!busca || normHist([l.nome, l.de, l.para, l.detalhe, l.origem, l.autor].join(" ")).includes(busca)));
+}
+
+function renderHistorico() {
+  const linhas = historicoFiltrado();
+  document.getElementById("h-count").textContent = `${linhas.length} movimentação(ões)`;
+  const MAX = 500;
+  document.getElementById("h-table").innerHTML = linhas.length ? linhas.slice(0, MAX).map(l => `<tr>
+      <td data-label="Data" style="white-space:nowrap;">${histDataHora(l.timestamp)}</td>
+      <td data-label="Tipo">${histBadge(l.tipo)}</td>
+      <td data-label="Nome"><a href="#" data-hist-chave="${escapeHtml(l.chave)}" data-hist-nome="${escapeHtml(l.nome)}" style="color:inherit;font-weight:600;">${histDominioIcone(l.dominio)} ${escapeHtml(l.nome)}</a></td>
+      <td data-label="De">${l.de ? `<span class="obra-tag">${escapeHtml(l.de)}</span>` : `<span class="muted">—</span>`}</td>
+      <td data-label="Para">${l.para ? `<span class="obra-tag">${escapeHtml(l.para)}</span>` : `<span class="muted">—</span>`}</td>
+      <td data-label="Detalhes">${escapeHtml(l.detalhe || "")}</td>
+      <td data-label="Origem" class="muted">${escapeHtml(l.origem || "")}</td>
+      <td data-label="Por" class="muted">${escapeHtml(l.autor || "—")}</td>
+    </tr>`).join("") + (linhas.length > MAX ? `<tr><td colspan="8" class="muted" style="text-align:center;">Mostrando as ${MAX} mais recentes — use os filtros ou exporte para Excel para ver tudo.</td></tr>` : "")
+    : `<tr><td colspan="8" class="empty-state">Nenhuma movimentação nesse período. O histórico começa a ser registrado a partir de agora.</td></tr>`;
+}
+
+async function abrirHistoricoItem(chave, nome) {
+  document.getElementById("hist-modal-title").textContent = `Histórico — ${nome}`;
+  const body = document.getElementById("hist-modal-body");
+  body.innerHTML = `<div class="empty-state">Carregando...</div>`;
+  document.getElementById("modal-hist").classList.add("open");
+  try {
+    const linhas = await buscarHistorico({ chave });
+    body.innerHTML = linhas.length ? linhas.map(l => `
+      <div class="log-item">
+        <div class="lwhen">${histDataHora(l.timestamp)}</div>
+        <div style="flex:1;min-width:200px;">
+          <div class="lfile">${histBadge(l.tipo)} ${l.de && l.de === l.para ? escapeHtml(l.de) : l.de || l.para ? `${escapeHtml(l.de || "—")} → ${escapeHtml(l.para || "—")}` : ""}</div>
+          <div class="lobras">${escapeHtml([l.detalhe, l.origem, l.autor && "por " + l.autor].filter(Boolean).join(" · "))}</div>
+        </div>
+      </div>`).join("")
+      : `<div class="empty-state">Nenhuma movimentação registrada ainda.</div>`;
+  } catch (err) {
+    body.innerHTML = `<div class="empty-state">Não consegui carregar: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+document.querySelectorAll("[data-hist-close]").forEach(el => el.addEventListener("click", () => document.getElementById("modal-hist").classList.remove("open")));
+document.getElementById("h-periodo").addEventListener("change", carregarHistorico);
+document.querySelectorAll("#h-busca, #h-dominio, #h-obra, #h-tipo").forEach(el => {
+  el.addEventListener("input", renderHistorico);
+  el.addEventListener("change", renderHistorico);
+});
+document.getElementById("h-table").addEventListener("click", (e) => {
+  const a = e.target.closest("[data-hist-chave]");
+  if (!a) return;
+  e.preventDefault();
+  abrirHistoricoItem(a.dataset.histChave, a.dataset.histNome);
+});
+document.getElementById("btn-h-autor").addEventListener("click", () => {
+  const nome = (prompt("Seu nome (fica gravado no histórico das movimentações feitas neste aparelho):", getAutorHist(false)) || "").trim();
+  if (nome) { try { localStorage.setItem(LS_KEY_AUTOR, nome); } catch (e) {} }
+  atualizarBotaoAutor();
+});
+document.getElementById("btn-h-export").addEventListener("click", () => {
+  const linhas = historicoFiltrado();
+  const rows = [["DATA", "TIPO", "CADASTRO", "COLABORADOR / EQUIPAMENTO", "DE", "PARA", "DETALHES", "ORIGEM", "POR"],
+    ...linhas.map(l => [histDataHora(l.timestamp), l.tipo, l.dominio === "equip" ? "Equipamentos" : "Mão de obra", l.nome, l.de || "", l.para || "", l.detalhe || "", l.origem || "", l.autor || ""])];
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Histórico");
+  XLSX.writeFile(wb, `historico-movimentacoes-${new Date().toISOString().slice(0,10)}.xlsx`);
+});
+document.getElementById("btn-hist-worker").addEventListener("click", () => {
+  const w = STATE.colaboradores.find(c => c.id === document.getElementById("modal-worker").dataset.editId);
+  if (w) abrirHistoricoItem(histChave("mo", w), histNome("mo", w));
+});
+document.getElementById("btn-hist-equip").addEventListener("click", () => {
+  const i = EQUIP_STATE.equipamentos.find(c => c.id === document.getElementById("modal-equip").dataset.editId);
+  if (i) abrirHistoricoItem(histChave("equip", i), histNome("equip", i));
 });
 
 /* -------------------------------------------------------------------------
