@@ -727,11 +727,20 @@ try { if (localStorage.getItem("ctrlTema") === "escuro") { document.getElementBy
     </section>
 
     <section class="eview" id="equip-view-lista">
+      <div class="equip-toolbar" style="border-bottom:none;padding-top:4px;flex-wrap:wrap;">
+        <div class="group-toggle" style="flex-wrap:wrap;">
+          <span>Mostrar:</span>
+          <button class="gt-btn active" style="white-space:nowrap;" data-mestre="">Todos</button>
+          <button class="gt-btn" style="white-space:nowrap;" data-mestre="em-obra">Em obra</button>
+          <button class="gt-btn" style="white-space:nowrap;" data-mestre="fora">Fora das obras</button>
+        </div>
+        <span style="font-size:.74rem;color:var(--text-dim);">Cadastro fixo da frota: o equipamento continua aqui mesmo quando sai da planilha semanal ou da obra.</span>
+      </div>
       <div class="panel table-wrap" style="margin:16px 28px;">
         <table>
           <thead><tr>
             <th>Equipamento</th><th>Código</th><th>Categoria</th><th>Status</th>
-            <th>Propriedade</th><th>Obra</th><th>Horímetro</th><th>Alerta</th><th>Observações</th><th></th>
+            <th>Propriedade</th><th>Obra atual</th><th>Horímetro</th><th>Alerta</th><th>Observações</th><th></th>
           </tr></thead>
           <tbody id="equip-lista-table"></tbody>
         </table>
@@ -1436,6 +1445,7 @@ function makeStore({ itemsKey, colName, obrasColName, logColName, lsKey }) {
         if (rec.id) {
           const idx = data[itemsKey].findIndex(c => c.id === rec.id);
           if (idx >= 0) data[itemsKey][idx] = { ...data[itemsKey][idx], ...rec };
+          else data[itemsKey].push({ ...rec });
         } else {
           data[itemsKey].push({ id: cryptoId(), ...rec });
         }
@@ -1663,14 +1673,14 @@ function histNome(dominio, i) {
   if (!i) return "";
   if (dominio === "mo") return i.nome || "";
   const base = [i.tipo, i.marca, i.modelo].filter(Boolean).join(" ");
-  const id = i.placa || i.tag || i.chassis || "";
+  const id = [i.placa, i.tag, i.chassis].find(v => idValido(v)) || "";
   return id ? `${base} — ${id}` : base;
 }
 // Chave estável da pessoa/equipamento (a importação semanal recria os registros com ids novos).
 function histChave(dominio, i) {
   if (dominio === "mo") return "mo:" + normHist(i.nome);
-  const id = i.placa || i.tag || i.chassis || i.renavam;
-  return "eq:" + normHist(id || [i.tipo, i.marca, i.modelo].join(" "));
+  const id = idValido(i.placa) || idValido(i.tag) || idValido(i.chassis) || idValido(i.renavam);
+  return "eq:" + (id || normHist([i.tipo, i.marca, i.modelo].join(" ")));
 }
 function histValor(campo, v) {
   if (campo === "manutencaoItens") return Array.isArray(v) && v.length ? `${v.length} item(ns)` : "nenhum";
@@ -1996,6 +2006,8 @@ async function reload() {
 async function reloadEquip() {
   try {
     EQUIP_STATE = await EquipStore.loadAll();
+    try { await carregarMestre(); await sincronizarMestre(); }
+    catch (e) { console.warn("Lista Mestre:", e); toast("Não consegui atualizar a Lista Mestre: " + e.message, true); }
   } catch (e) {
     console.error("Falha ao carregar equipamentos do Firebase:", e);
     toast("Não foi possível conectar ao Firebase (" + e.message + "). Mostrando dados salvos neste navegador.", true);
@@ -2590,6 +2602,7 @@ function switchEquipSubView(view) {
   equipSubView = view;
   document.querySelectorAll('#equip-body nav.tabs button').forEach(b => b.classList.toggle("active", b.dataset.eview === view));
   document.querySelectorAll('#equip-body .eview').forEach(v => v.classList.toggle("active", v.id === "equip-view-" + view));
+  if (equipLoaded) renderEquipAll();
 }
 document.querySelectorAll('#equip-body nav.tabs button').forEach(btn => {
   btn.addEventListener("click", () => switchEquipSubView(btn.dataset.eview));
@@ -2840,9 +2853,9 @@ function wireEquipDragDrop() {
   });
 }
 
-document.querySelectorAll(".group-toggle .gt-btn").forEach(btn => {
+document.querySelectorAll(".group-toggle .gt-btn[data-group]").forEach(btn => {
   btn.addEventListener("click", () => {
-    document.querySelectorAll(".group-toggle .gt-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".group-toggle .gt-btn[data-group]").forEach(b => b.classList.remove("active"));
     btn.classList.add("active");
     equipGroupBy = btn.dataset.group;
     renderEquipKanban();
@@ -2857,24 +2870,159 @@ document.querySelectorAll(".group-toggle .gt-btn").forEach(btn => {
 /* -------------------------------------------------------------------------
    EQUIPAMENTOS — LISTA MESTRE (tabela)
    ------------------------------------------------------------------------- */
+/* Lista Mestre = cadastro fixo da frota (coleção "equipamentosMestre"): um
+   documento por equipamento, que NUNCA some quando a planilha semanal substitui
+   os equipamentos de uma obra. A cada carga, os equipamentos das obras são
+   ligados ao seu cadastro mestre (pelo id, pela placa/TAG/chassis/renavam ou,
+   sem identificação, por tipo+marca+modelo de um cadastro que ficou sem obra)
+   e o que for novo entra no mestre sozinho. */
+const MESTRE_COL = "equipamentosMestre";
+const LS_KEY_MESTRE = "consolidadoEquipamentosMestre";
+const MESTRE_CAMPOS = ["tipo", "marca", "modelo", "placa", "tag", "chassis", "renavam", "ano", "proprietario", "locacao", "valor"];
+let MESTRE = [];               // [{ id, ...campos, alocId, ultimaObra, obraDesde, ultimaSituacao, criadoEm }]
+let mestreFiltro = "";         // "", "em-obra", "fora"
+let equipModalMestreId = null; // cadastro mestre que está sendo colocado numa obra pelo modal
+
+function idValido(v) {
+  const s = normHist(v);
+  return s && !/^(N\/?A|-+|—|S\/?N|SEM( PLACA| TAG)?|0+|NAO TEM|NENHUMA?)$/.test(s) ? s : "";
+}
+function idsEquip(e) {
+  return ["placa", "tag", "chassis", "renavam"].map(k => { const v = idValido(e[k]); return v ? k + ":" + v : ""; }).filter(Boolean);
+}
+function chaveSemId(e) { return normHist([e.tipo, e.marca, e.modelo].join(" ")); }
+
+function lsMestre() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY_MESTRE) || "{}"); } catch (e) { return {}; }
+}
+
+async function carregarMestre() {
+  if (useFirebase) {
+    const snap = await withTimeout(() => fs.getDocs(fs.collection(db, MESTRE_COL)));
+    MESTRE = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  } else {
+    MESTRE = Object.entries(lsMestre()).map(([id, v]) => ({ id, ...v }));
+  }
+}
+
+async function gravarMestre(patches) { // [{ id, data }] — grava com merge
+  if (!patches.length) return;
+  if (useFirebase) {
+    await withTimeout(async () => {
+      for (let i = 0; i < patches.length; i += 450) {
+        const batch = fs.writeBatch(db);
+        patches.slice(i, i + 450).forEach(p => batch.set(fs.doc(db, MESTRE_COL, p.id), p.data, { merge: true }));
+        await batch.commit();
+      }
+    }, 30000);
+  } else {
+    const map = lsMestre();
+    patches.forEach(p => { map[p.id] = { ...(map[p.id] || {}), ...p.data }; });
+    localStorage.setItem(LS_KEY_MESTRE, JSON.stringify(map));
+  }
+  patches.forEach(p => {
+    const m = MESTRE.find(x => x.id === p.id);
+    if (m) Object.assign(m, p.data); else MESTRE.push({ id: p.id, ...p.data });
+  });
+}
+
+async function apagarMestre(id) {
+  if (useFirebase) {
+    await withTimeout(() => fs.deleteDoc(fs.doc(db, MESTRE_COL, id)));
+  } else {
+    const map = lsMestre();
+    delete map[id];
+    localStorage.setItem(LS_KEY_MESTRE, JSON.stringify(map));
+  }
+  MESTRE = MESTRE.filter(m => m.id !== id);
+}
+
+// Liga cada equipamento das obras ao seu cadastro mestre; só grava o que mudou.
+async function sincronizarMestre() {
+  const alocs = EQUIP_STATE.equipamentos;
+  const alocIdsAtuais = new Set(alocs.map(a => a.id));
+  const porAloc = new Map(MESTRE.filter(m => m.alocId).map(m => [m.alocId, m]));
+  const usados = new Set();
+  const ligacao = new Map(); // id do equipamento na obra -> cadastro mestre
+  const ligar = (a, m) => { usados.add(m.id); ligacao.set(a.id, m); };
+  const livre = (m) => !usados.has(m.id) && (!m.alocId || !alocIdsAtuais.has(m.alocId));
+
+  alocs.forEach(a => { const m = porAloc.get(a.id); if (m && !usados.has(m.id)) ligar(a, m); });
+  alocs.filter(a => !ligacao.has(a.id)).forEach(a => {
+    const ids = idsEquip(a);
+    if (!ids.length) return;
+    const m = MESTRE.find(m => livre(m) && idsEquip(m).some(x => ids.includes(x)));
+    if (m) ligar(a, m);
+  });
+  alocs.filter(a => !ligacao.has(a.id) && !idsEquip(a).length).forEach(a => {
+    const k = chaveSemId(a);
+    const cands = MESTRE.filter(m => livre(m) && !idsEquip(m).length && chaveSemId(m) === k);
+    const m = cands.find(m => m.ultimaObra === (a.obra || "")) || cands[0];
+    if (m) ligar(a, m);
+  });
+
+  const agora = Date.now();
+  const patches = [];
+  alocs.forEach(a => {
+    let m = ligacao.get(a.id);
+    const data = {};
+    if (!m) { m = { id: "m-" + a.id }; data.criadoEm = agora; }
+    if (m.alocId !== a.id) data.alocId = a.id;
+    MESTRE_CAMPOS.forEach(c => {
+      const v = (a[c] ?? "").toString().trim();
+      if (v && v !== (m[c] ?? "").toString().trim()) data[c] = v;
+    });
+    if ((m.ultimaObra ?? null) !== (a.obra || "")) { data.ultimaObra = a.obra || ""; data.obraDesde = agora; }
+    if ((a.situacao || "") !== (m.ultimaSituacao || "")) data.ultimaSituacao = a.situacao || "";
+    if (Object.keys(data).length) patches.push({ id: m.id, data });
+  });
+  await gravarMestre(patches);
+}
+
+function mestreAlocacao(m) {
+  return m.alocId ? EQUIP_STATE.equipamentos.find(a => a.id === m.alocId) || null : null;
+}
+
 function renderEquipListaMestre() {
-  const list = getFilteredEquip().slice().sort((a, b) => (a.tipo || "").localeCompare(b.tipo || ""));
-  document.getElementById("eq-count").textContent = `${list.length} de ${EQUIP_STATE.equipamentos.length} equipamento(s)`;
-  const rows = list.map(w => `
+  const busca = document.getElementById("eq-busca").value.trim().toLowerCase();
+  const obraF = document.getElementById("eq-obra").value;
+  const sitF = document.getElementById("eq-situacao").value;
+  const linhas = MESTRE.map(m => {
+    const a = mestreAlocacao(m);
+    return { m, a, w: a ? { ...m, ...a } : m };
+  }).filter(({ m, a, w }) => {
+    if (mestreFiltro === "em-obra" && !(a && a.obra)) return false;
+    if (mestreFiltro === "fora" && a && a.obra) return false;
+    if (busca && ![w.tipo, w.marca, w.modelo, w.placa, w.tag, w.chassis, m.ultimaObra].filter(Boolean).join(" ").toLowerCase().includes(busca)) return false;
+    if (obraF && !(a && a.obra === obraF)) return false;
+    const sit = a ? a.situacao : "";
+    if (sitF && sit !== sitF) return false;
+    if (equipSituacaoFiltro && sit !== equipSituacaoFiltro) return false;
+    if (equipCategoriaFiltro && inferCategoriaEquip(w.tipo) !== equipCategoriaFiltro) return false;
+    return true;
+  }).sort((x, y) => (x.w.tipo || "").localeCompare(y.w.tipo || "") || (x.w.marca || "").localeCompare(y.w.marca || ""));
+
+  if (equipSubView === "lista") {
+    const fora = MESTRE.filter(m => { const a = mestreAlocacao(m); return !(a && a.obra); }).length;
+    document.getElementById("eq-count").textContent = `${linhas.length} de ${MESTRE.length} na lista mestre (${fora} fora das obras)`;
+  }
+  const data = (ts) => ts ? new Date(ts).toLocaleDateString("pt-BR") : "";
+  const rows = linhas.map(({ m, a, w }) => `
     <tr>
-      <td data-label="Equipamento"><strong>${w.temFoto ? "📷 " : ""}${escapeHtml(w.tipo)}</strong><div class="muted" style="font-size:.72rem;">${escapeHtml([w.marca, w.modelo].filter(Boolean).join(" ")) || "—"}</div></td>
-      <td data-label="Código" class="muted">${escapeHtml((w.tag && w.tag !== "-" ? w.tag : w.placa) || "—")}</td>
+      <td data-label="Equipamento"><strong>${a?.temFoto ? "📷 " : ""}${escapeHtml(w.tipo || "—")}</strong><div class="muted" style="font-size:.72rem;">${escapeHtml([w.marca, w.modelo].filter(Boolean).join(" ")) || "—"}</div></td>
+      <td data-label="Código" class="muted">${escapeHtml(idValido(w.tag) ? w.tag : idValido(w.placa) ? w.placa : idValido(w.chassis) ? w.chassis : "—")}</td>
       <td data-label="Categoria" class="muted">${escapeHtml(inferCategoriaEquip(w.tipo))}</td>
-      <td data-label="Status"><span class="badge ${equipStatusClass(w.situacao)}">${escapeHtml(w.situacao || "—")}</span></td>
+      <td data-label="Status">${a ? `<span class="badge ${equipStatusClass(a.situacao)}">${escapeHtml(a.situacao || "—")}</span>` : `<span class="badge st-outro">FORA DAS OBRAS</span>`}</td>
       <td data-label="Propriedade" class="muted">${equipPropriedadeLabel(w.locacao)}</td>
-      <td data-label="Obra"><span class="obra-tag">${escapeHtml(w.obra || "—")}</span></td>
-      <td data-label="Horímetro" class="muted">${w.horimetroAtual ? escapeHtml(w.horimetroAtual) + " h" : "—"}</td>
-      <td data-label="Alerta">${equipHorimetroAlert(w) ? `<span class="badge eq-manutencao">⚠ Manutenção próxima</span>` : `<span class="muted">—</span>`}</td>
-      <td data-label="Observações" class="muted" style="max-width:200px;white-space:normal;">${escapeHtml(w.obs || "—")}</td>
+      <td data-label="Obra atual">${a && a.obra ? `<span class="obra-tag">${escapeHtml(a.obra)}</span>` : `<span class="muted" style="font-size:.74rem;">${a ? "sem obra" : m.ultimaObra ? "última: " + escapeHtml(m.ultimaObra) : "—"}</span>`}${m.obraDesde ? `<div class="muted" style="font-size:.68rem;">${a ? "desde" : "até"} ${data(m.obraDesde)}</div>` : ""}</td>
+      <td data-label="Horímetro" class="muted">${a?.horimetroAtual ? escapeHtml(a.horimetroAtual) + " h" : "—"}</td>
+      <td data-label="Alerta">${a && equipHorimetroAlert(a) ? `<span class="badge eq-manutencao">⚠ Manutenção próxima</span>` : `<span class="muted">—</span>`}</td>
+      <td data-label="Observações" class="muted" style="max-width:200px;white-space:normal;">${escapeHtml((a ? a.obs : m.obs) || "—")}</td>
       <td data-label="">
         <div class="row-actions">
-          <button class="icon-btn" title="Editar" data-edit-eq="${w.id}">✎</button>
-          <button class="icon-btn del" title="Excluir" data-del-eq="${w.id}">✕</button>
+          <button class="icon-btn" title="${a ? "Editar" : "Colocar numa obra"}" data-mestre-edit="${m.id}">✎</button>
+          <button class="icon-btn" title="Histórico" data-mestre-hist="${m.id}">🕘</button>
+          <button class="icon-btn del" title="${a ? "Tirar da obra (continua na Lista Mestre)" : "Excluir da Lista Mestre"}" data-mestre-del="${m.id}">✕</button>
         </div>
       </td>
     </tr>
@@ -2882,20 +3030,50 @@ function renderEquipListaMestre() {
   document.getElementById("equip-lista-table").innerHTML = rows || `<tr><td colspan="10" class="empty-state">Nenhum equipamento encontrado.</td></tr>`;
 }
 
+document.querySelectorAll(".gt-btn[data-mestre]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".gt-btn[data-mestre]").forEach(b => b.classList.toggle("active", b === btn));
+    mestreFiltro = btn.dataset.mestre;
+    renderEquipListaMestre();
+  });
+});
+
 document.getElementById("equip-lista-table").addEventListener("click", async (e) => {
-  const editId = e.target.dataset.editEq;
-  const delId = e.target.dataset.delEq;
-  if (editId) {
-    const item = EQUIP_STATE.equipamentos.find(w => w.id === editId);
-    if (item) openEquipModal(item);
-  } else if (delId) {
-    if (!requireUnlock()) return;
-    if (confirm("Excluir este equipamento do consolidado?")) {
-      await EquipStore.deleteItem(delId);
-      await deleteEquipFoto(delId);
-      toast("Equipamento removido.");
-      await reloadEquip();
-    }
+  const btn = e.target.closest("[data-mestre-edit],[data-mestre-hist],[data-mestre-del]");
+  if (!btn) return;
+  const m = MESTRE.find(x => x.id === (btn.dataset.mestreEdit || btn.dataset.mestreHist || btn.dataset.mestreDel));
+  if (!m) return;
+  const a = mestreAlocacao(m);
+  const nome = histNome("equip", a || m);
+  if (btn.dataset.mestreHist) { abrirHistoricoItem(histChave("equip", a || m), nome); return; }
+  if (btn.dataset.mestreEdit) {
+    if (a) { openEquipModal(a); return; }
+    // fora das obras: abre o cadastro já preenchido para escolher a obra
+    openEquipModal(null);
+    Object.entries({ tipo: "eqf-tipo", marca: "eqf-marca", modelo: "eqf-modelo", placa: "eqf-placa", proprietario: "eqf-proprietario",
+      valor: "eqf-valor", tag: "eqf-tag", renavam: "eqf-renavam", chassis: "eqf-chassis", ano: "eqf-ano" })
+      .forEach(([c, id]) => { document.getElementById(id).value = m[c] || ""; });
+    document.getElementById("eqf-locacao").value = ["PRÓPRIO", "LOCADO"].includes(m.locacao) ? m.locacao : "";
+    document.getElementById("eqf-obra").value = m.ultimaObra || "";
+    document.getElementById("equip-modal-title").textContent = "Colocar equipamento numa obra";
+    equipModalMestreId = m.id;
+    return;
+  }
+  if (!requireUnlock()) return;
+  if (a) {
+    if (!confirm(`Tirar ${nome} da obra ${a.obra || "(sem obra)"}?\nEle continua na Lista Mestre, como "fora das obras".`)) return;
+    await EquipStore.deleteItem(a.id);
+    await deleteEquipFoto(a.id);
+    toast("Equipamento tirado da obra (continua na Lista Mestre).");
+    await reloadEquip();
+  } else {
+    if (!confirm(`Excluir ${nome} DEFINITIVAMENTE da Lista Mestre?\nUse só para equipamento vendido, devolvido ou cadastrado por engano.`)) return;
+    try {
+      await apagarMestre(m.id);
+      emitirHistorico([{ dominio: "equip", chave: histChave("equip", m), nome, tipo: "Exclusão", de: m.ultimaObra || "", detalhe: "excluído da Lista Mestre", origem: "Lista Mestre" }]);
+      toast("Equipamento excluído da Lista Mestre.");
+    } catch (err) { toast("Erro ao excluir: " + err.message, true); }
+    renderEquipListaMestre();
   }
 });
 
@@ -4040,6 +4218,7 @@ function openEquipModal(item) {
   document.getElementById("modal-equip").dataset.editId = id;
   document.getElementById("modal-equip").dataset.isNew = item ? "" : "1";
   document.getElementById("btn-hist-equip").style.display = item ? "" : "none";
+  equipModalMestreId = null;
   equipFotoPending = null;
   equipFotoModalId = id;
   renderEquipFotoPreview(null);
@@ -4595,6 +4774,10 @@ document.getElementById("btn-save-equip").addEventListener("click", async () => 
   if (equipFotoPending?.action === "set") rec.temFoto = true;
   else if (equipFotoPending?.action === "clear") rec.temFoto = false;
   await EquipStore.saveItem(rec);
+  if (equipModalMestreId) {
+    try { await gravarMestre([{ id: equipModalMestreId, data: { alocId: editId } }]); } catch (e) { console.warn("Lista Mestre:", e); }
+    equipModalMestreId = null;
+  }
   if (equipFotoPending?.action === "set") await setEquipFoto(editId, equipFotoPending.dataUrl);
   else if (equipFotoPending?.action === "clear") await deleteEquipFoto(editId);
   closeModals();
@@ -4919,6 +5102,20 @@ document.getElementById("btn-confirm-import").addEventListener("click", async ()
 /* -------------------------------------------------------------------------
    EXPORTAR EXCEL
    ------------------------------------------------------------------------- */
+function exportListaMestreExcel() {
+  const rows = [["TIPO","MARCA","MODELO","PLACA","TAG/PATRIMONIO","CHASSIS/N.º SERIE","RENAVAM","ANO","PROPRIETÁRIO/LOCADOR","LOCAÇÃO","VALOR","OBRA ATUAL","SITUAÇÃO","ÚLTIMA OBRA","NA OBRA DESDE / ATÉ"]];
+  MESTRE.slice().sort((a, b) => (a.tipo || "").localeCompare(b.tipo || "")).forEach(m => {
+    const a = mestreAlocacao(m);
+    rows.push([m.tipo, m.marca, m.modelo, m.placa, m.tag, m.chassis, m.renavam, m.ano, m.proprietario, m.locacao, m.valor,
+      a ? (a.obra || "SEM OBRA") : "FORA DAS OBRAS", a ? (a.situacao || "") : "", m.ultimaObra || "",
+      m.obraDesde ? new Date(m.obraDesde).toLocaleDateString("pt-BR") : ""].map(v => v ?? ""));
+  });
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Lista Mestre");
+  XLSX.writeFile(wb, `lista-mestre-equipamentos-${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
 function exportEquipamentosExcel() {
     const rows = [["OBRA","TIPO","OPERADOR","MARCA","MODELO","PROPRIETÁRIO/LOCADOR","LOCAÇÃO","VALOR","TAG/PATRIMONIO","RENAVAM","CHASSIS/N.º SERIE","ANO","PLACA","SITUAÇÃO","HORÍMETRO ATUAL","HORÍMETRO MANUTENÇÃO","MOTIVO MANUTENÇÃO","PREVISÃO DEVOLUÇÃO","OBRA (COD. SIENGE)","FRENTE SERVIÇO","OBS."]];
     const byObra = {};
@@ -4952,7 +5149,8 @@ function exportMaoDeObraExcel() {
 }
 
 document.getElementById("btn-export").addEventListener("click", () => {
-  if (currentModule === "equipamentos") exportEquipamentosExcel();
+  if (currentModule === "equipamentos" && equipSubView === "lista") exportListaMestreExcel();
+  else if (currentModule === "equipamentos") exportEquipamentosExcel();
   else exportMaoDeObraExcel();
 });
 
