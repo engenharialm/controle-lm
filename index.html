@@ -711,7 +711,7 @@ try { if (localStorage.getItem("ctrlTema") === "escuro") { document.getElementBy
     <div class="equip-toolbar" id="equip-situacao-pills" style="padding-top:0;">
       <span style="font-size:.76rem;color:var(--text-dim);">Situação:</span>
     </div>
-    <div class="equip-toolbar" id="equip-categoria-pills" style="padding-top:0;">
+    <div class="equip-toolbar" id="equip-categoria-pills" style="padding-top:0;flex-wrap:wrap;">
       <span style="font-size:.76rem;color:var(--text-dim);">Categoria:</span>
     </div>
 
@@ -2596,6 +2596,8 @@ function inferCategoriaEquip(tipo) {
 
 let equipSubView = "quadro";
 let equipCategoriaFiltro = "";
+let equipPropriedadeFiltro = ""; // "Próprio", "Alugado" ou "—" (não informado)
+const EQUIP_PROPRIEDADES = [["Próprio", "Próprio"], ["Alugado", "Alugado"], ["—", "Não informado"]];
 let equipSituacaoFiltro = "";
 
 function switchEquipSubView(view) {
@@ -2682,6 +2684,16 @@ function renderEquipFilters() {
   const pillsBox = document.getElementById("equip-categoria-pills");
   pillsBox.innerHTML = `<span style="font-size:.76rem;color:var(--text-dim);">Categoria:</span>` +
     EQUIP_CATEGORIAS.map(c => `<button type="button" class="gt-btn eq-cat-pill${equipCategoriaFiltro === c ? " active" : ""}" data-cat="${escapeHtml(c)}">${escapeHtml(c)}</button>`).join("");
+  pillsBox.innerHTML += `<span style="font-size:.76rem;color:var(--text-dim);margin-left:14px;">Propriedade:</span>` +
+    EQUIP_PROPRIEDADES.map(([v, rot]) => `<button type="button" class="gt-btn eq-prop-pill${equipPropriedadeFiltro === v ? " active" : ""}" data-prop="${escapeHtml(v)}">${escapeHtml(rot)}</button>`).join("");
+  pillsBox.querySelectorAll(".eq-prop-pill").forEach(btn => {
+    btn.addEventListener("click", () => {
+      equipPropriedadeFiltro = equipPropriedadeFiltro === btn.dataset.prop ? "" : btn.dataset.prop;
+      renderEquipFilters();
+      renderEquipKanban();
+      renderEquipListaMestre();
+    });
+  });
   pillsBox.querySelectorAll(".eq-cat-pill").forEach(btn => {
     btn.addEventListener("click", () => {
       equipCategoriaFiltro = equipCategoriaFiltro === btn.dataset.cat ? "" : btn.dataset.cat;
@@ -2716,6 +2728,7 @@ function getFilteredEquip() {
     if (obra && w.obra !== obra) return false;
     if (situacao && w.situacao !== situacao) return false;
     if (equipCategoriaFiltro && inferCategoriaEquip(w.tipo) !== equipCategoriaFiltro) return false;
+    if (equipPropriedadeFiltro && equipPropriedadeLabel(w.locacao) !== equipPropriedadeFiltro) return false;
     if (equipSituacaoFiltro && w.situacao !== equipSituacaoFiltro) return false;
     return true;
   });
@@ -2999,6 +3012,7 @@ function renderEquipListaMestre() {
     if (sitF && sit !== sitF) return false;
     if (equipSituacaoFiltro && sit !== equipSituacaoFiltro) return false;
     if (equipCategoriaFiltro && inferCategoriaEquip(w.tipo) !== equipCategoriaFiltro) return false;
+    if (equipPropriedadeFiltro && equipPropriedadeLabel(w.locacao) !== equipPropriedadeFiltro) return false;
     return true;
   }).sort((x, y) => (x.w.tipo || "").localeCompare(y.w.tipo || "") || (x.w.marca || "").localeCompare(y.w.marca || ""));
 
