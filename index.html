@@ -1199,6 +1199,21 @@ try { if (localStorage.getItem("ctrlTema") === "escuro") { document.getElementBy
           <label>Observação</label>
           <textarea id="eqf-obs"></textarea>
         </div>
+        <div class="field full" id="eqf-docs-box">
+          <label>Contrato e medições</label>
+          <div id="eqf-docs-lista" style="margin-bottom:8px;"></div>
+          <div id="eqf-docs-form" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <select id="eqf-doc-tipo" style="width:auto;">
+              <option value="medicao">Medição</option>
+              <option value="contrato">Contrato</option>
+            </select>
+            <input type="month" id="eqf-doc-ref" title="Mês da medição" style="width:auto;">
+            <input type="file" id="eqf-doc-input" accept=".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xls,.doc,.docx" style="display:none;">
+            <button type="button" class="btn btn-ghost btn-sm" id="eqf-doc-btn">📎 Anexar arquivo</button>
+            <span id="eqf-doc-status" style="font-size:.74rem;color:var(--text-dim);"></span>
+          </div>
+          <div id="eqf-docs-novo" style="display:none;font-size:.76rem;color:var(--text-dim);">Salve o equipamento primeiro para anexar contrato e medições.</div>
+        </div>
       </div>
     </div>
     <div class="modal-foot">
@@ -2006,7 +2021,7 @@ async function reload() {
 async function reloadEquip() {
   try {
     EQUIP_STATE = await EquipStore.loadAll();
-    try { await carregarMestre(); await sincronizarMestre(); }
+    try { await carregarMestre(); await sincronizarMestre(); await carregarDocsEquip(); }
     catch (e) { console.warn("Lista Mestre:", e); toast("Não consegui atualizar a Lista Mestre: " + e.message, true); }
   } catch (e) {
     console.error("Falha ao carregar equipamentos do Firebase:", e);
@@ -3023,7 +3038,7 @@ function renderEquipListaMestre() {
   const data = (ts) => ts ? new Date(ts).toLocaleDateString("pt-BR") : "";
   const rows = linhas.map(({ m, a, w }) => `
     <tr>
-      <td data-label="Equipamento"><strong>${a?.temFoto ? "📷 " : ""}${escapeHtml(w.tipo || "—")}</strong><div class="muted" style="font-size:.72rem;">${escapeHtml([w.marca, w.modelo].filter(Boolean).join(" ")) || "—"}</div></td>
+      <td data-label="Equipamento"><strong>${a?.temFoto ? "📷 " : ""}${escapeHtml(w.tipo || "—")}</strong>${(n => n ? ` <span class="muted" style="font-size:.7rem;cursor:pointer;" title="Ver contrato e medições" data-mestre-edit="${m.id}" data-mestre-docs="1">📎 ${n}</span>` : "")(DOCS_EQUIP.filter(d => d.mestreId === m.id).length)}<div class="muted" style="font-size:.72rem;">${escapeHtml([w.marca, w.modelo].filter(Boolean).join(" ")) || "—"}</div></td>
       <td data-label="Código" class="muted">${escapeHtml(idValido(w.tag) ? w.tag : idValido(w.placa) ? w.placa : idValido(w.chassis) ? w.chassis : "—")}</td>
       <td data-label="Categoria" class="muted">${escapeHtml(inferCategoriaEquip(w.tipo))}</td>
       <td data-label="Status">${a ? `<span class="badge ${equipStatusClass(a.situacao)}">${escapeHtml(a.situacao || "—")}</span>` : `<span class="badge st-outro">FORA DAS OBRAS</span>`}</td>
@@ -3061,6 +3076,7 @@ document.getElementById("equip-lista-table").addEventListener("click", async (e)
   const nome = histNome("equip", a || m);
   if (btn.dataset.mestreHist) { abrirHistoricoItem(histChave("equip", a || m), nome); return; }
   if (btn.dataset.mestreEdit) {
+    if (btn.dataset.mestreDocs) setTimeout(() => document.getElementById("eqf-docs-box").scrollIntoView({ block: "center" }), 50);
     if (a) { openEquipModal(a); return; }
     // fora das obras: abre o cadastro já preenchido para escolher a obra
     openEquipModal(null);
@@ -3071,6 +3087,7 @@ document.getElementById("equip-lista-table").addEventListener("click", async (e)
     document.getElementById("eqf-obra").value = m.ultimaObra || "";
     document.getElementById("equip-modal-title").textContent = "Colocar equipamento numa obra";
     equipModalMestreId = m.id;
+    renderDocsModal();
     return;
   }
   if (!requireUnlock()) return;
@@ -3089,6 +3106,214 @@ document.getElementById("equip-lista-table").addEventListener("click", async (e)
     } catch (err) { toast("Erro ao excluir: " + err.message, true); }
     renderEquipListaMestre();
   }
+});
+
+/* -------------------------------------------------------------------------
+   EQUIPAMENTOS — CONTRATO E MEDIÇÕES (arquivos anexados ao cadastro mestre)
+   O projeto não usa o Firebase Storage, então o arquivo vai para o Firestore
+   em pedaços: "equipamentosDocs" guarda a ficha do arquivo e
+   "equipamentosDocsPartes" o conteúdo (base64, até ~700 KB por documento).
+   A ficha só é gravada depois de todas as partes, para não listar envio pela metade.
+   ------------------------------------------------------------------------- */
+const DOCS_COL = "equipamentosDocs";
+const DOCS_PARTES_COL = "equipamentosDocsPartes";
+const LS_KEY_DOCS = "consolidadoEquipamentosDocs";
+const DOC_PARTE_CHARS = 700000;
+const DOC_MAX_MB = 15;
+const DOC_TIPOS = { contrato: "Contrato", medicao: "Medição" };
+let DOCS_EQUIP = []; // fichas dos arquivos (sem o conteúdo)
+
+function lsDocs() {
+  try { return JSON.parse(localStorage.getItem(LS_KEY_DOCS) || '{"docs":{},"partes":{}}'); } catch (e) { return { docs: {}, partes: {} }; }
+}
+
+async function carregarDocsEquip() {
+  if (useFirebase) {
+    const snap = await withTimeout(() => fs.getDocs(fs.collection(db, DOCS_COL)));
+    DOCS_EQUIP = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  } else {
+    DOCS_EQUIP = Object.entries(lsDocs().docs).map(([id, v]) => ({ id, ...v }));
+  }
+}
+
+function docsDoMestre(mestreId) {
+  return DOCS_EQUIP.filter(d => d.mestreId === mestreId)
+    .sort((a, b) => (a.tipo === b.tipo ? 0 : a.tipo === "contrato" ? -1 : 1) || (b.referencia || "").localeCompare(a.referencia || "") || b.enviadoEm - a.enviadoEm);
+}
+
+function lerArquivoBase64(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",")[1] || "");
+    r.onerror = () => reject(r.error || new Error("não consegui ler o arquivo"));
+    r.readAsDataURL(file);
+  });
+}
+
+async function enviarDocEquip(mestreId, tipo, referencia, file, aoProgredir) {
+  const b64 = await lerArquivoBase64(file);
+  const partes = [];
+  for (let i = 0; i < b64.length; i += DOC_PARTE_CHARS) partes.push(b64.slice(i, i + DOC_PARTE_CHARS));
+  const ficha = { mestreId, tipo, referencia: referencia || "", nome: file.name, mime: file.type || "application/octet-stream",
+                  tamanho: file.size, partes: partes.length, enviadoEm: Date.now(), autor: getAutorHist() };
+  if (useFirebase) {
+    const id = fs.doc(fs.collection(db, DOCS_COL)).id;
+    for (let i = 0; i < partes.length; i++) {
+      await withTimeout(() => fs.setDoc(fs.doc(db, DOCS_PARTES_COL, `${id}_${i}`), { docId: id, i, dados: partes[i] }), 60000);
+      aoProgredir?.(i + 1, partes.length);
+    }
+    await withTimeout(() => fs.setDoc(fs.doc(db, DOCS_COL, id), ficha));
+    DOCS_EQUIP.push({ id, ...ficha });
+  } else {
+    const id = cryptoId();
+    const st = lsDocs();
+    partes.forEach((p, i) => { st.partes[`${id}_${i}`] = p; });
+    st.docs[id] = ficha;
+    localStorage.setItem(LS_KEY_DOCS, JSON.stringify(st)); // pode estourar o limite do navegador com arquivos grandes
+    DOCS_EQUIP.push({ id, ...ficha });
+  }
+}
+
+async function baixarDocEquip(d) {
+  let b64 = "";
+  if (useFirebase) {
+    const snap = await withTimeout(() => fs.getDocs(fs.query(fs.collection(db, DOCS_PARTES_COL), fs.where("docId", "==", d.id))), 60000);
+    b64 = snap.docs.map(x => x.data()).sort((a, b) => a.i - b.i).map(x => x.dados).join("");
+  } else {
+    const st = lsDocs();
+    for (let i = 0; i < d.partes; i++) b64 += st.partes[`${d.id}_${i}`] || "";
+  }
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: d.mime || "application/octet-stream" });
+}
+
+async function apagarDocEquip(d) {
+  if (useFirebase) {
+    await withTimeout(async () => {
+      await fs.deleteDoc(fs.doc(db, DOCS_COL, d.id)); // a ficha primeiro: some da lista mesmo se faltar apagar alguma parte
+      const batch = fs.writeBatch(db);
+      for (let i = 0; i < (d.partes || 0); i++) batch.delete(fs.doc(db, DOCS_PARTES_COL, `${d.id}_${i}`));
+      await batch.commit();
+    }, 30000);
+  } else {
+    const st = lsDocs();
+    delete st.docs[d.id];
+    for (let i = 0; i < (d.partes || 0); i++) delete st.partes[`${d.id}_${i}`];
+    localStorage.setItem(LS_KEY_DOCS, JSON.stringify(st));
+  }
+  DOCS_EQUIP = DOCS_EQUIP.filter(x => x.id !== d.id);
+}
+
+function tamanhoLegivel(n) {
+  return n >= 1048576 ? (n / 1048576).toFixed(1).replace(".", ",") + " MB" : Math.max(1, Math.round(n / 1024)) + " KB";
+}
+function mesLegivel(ref) {
+  const [a, m] = (ref || "").split("-");
+  return a && m ? `${m}/${a}` : "";
+}
+
+// Cadastro mestre do equipamento aberto no modal (null = equipamento novo, ainda não salvo).
+function mestreIdDoModal() {
+  if (equipModalMestreId) return equipModalMestreId;
+  const modal = document.getElementById("modal-equip");
+  if (modal.dataset.isNew === "1") return null;
+  return MESTRE.find(m => m.alocId === modal.dataset.editId)?.id || null;
+}
+
+function renderDocsModal() {
+  const mestreId = mestreIdDoModal();
+  document.getElementById("eqf-docs-form").style.display = mestreId ? "flex" : "none";
+  document.getElementById("eqf-docs-novo").style.display = mestreId ? "none" : "";
+  document.getElementById("eqf-doc-ref").style.display = document.getElementById("eqf-doc-tipo").value === "medicao" ? "" : "none";
+  const lista = mestreId ? docsDoMestre(mestreId) : [];
+  document.getElementById("eqf-docs-lista").innerHTML = lista.length ? lista.map(d => `
+    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem;">
+      <span class="badge ${d.tipo === "contrato" ? "st-ferias" : "st-mob"}">${DOC_TIPOS[d.tipo] || "Arquivo"}${d.tipo === "medicao" && d.referencia ? " " + mesLegivel(d.referencia) : ""}</span>
+      <a href="#" data-doc-abrir="${d.id}" style="flex:1 1 140px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit;font-weight:600;" title="Abrir / baixar">${escapeHtml(d.nome)}</a>
+      <span class="muted" style="font-size:.7rem;">${tamanhoLegivel(d.tamanho || 0)} · ${new Date(d.enviadoEm).toLocaleDateString("pt-BR")}${d.autor ? " · " + escapeHtml(d.autor) : ""}</span>
+      <button type="button" class="icon-btn del" title="Excluir arquivo" data-doc-del="${d.id}">✕</button>
+    </div>`).join("")
+    : (mestreId ? `<div class="muted" style="font-size:.76rem;">Nenhum arquivo anexado.</div>` : "");
+}
+
+(function () {
+  const ref = document.getElementById("eqf-doc-ref");
+  const hoje = new Date();
+  ref.value = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, "0")}`;
+})();
+document.getElementById("eqf-doc-tipo").addEventListener("change", renderDocsModal);
+document.getElementById("eqf-doc-btn").addEventListener("click", () => {
+  if (!requireUnlock()) return;
+  document.getElementById("eqf-doc-input").click();
+});
+document.getElementById("eqf-doc-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  const mestreId = mestreIdDoModal();
+  if (!file || !mestreId) return;
+  if (file.size > DOC_MAX_MB * 1048576) { toast(`Arquivo muito grande (${tamanhoLegivel(file.size)}). O limite é ${DOC_MAX_MB} MB — reduza o PDF e tente de novo.`, true); return; }
+  const tipo = document.getElementById("eqf-doc-tipo").value;
+  const referencia = tipo === "medicao" ? document.getElementById("eqf-doc-ref").value : "";
+  const status = document.getElementById("eqf-doc-status");
+  const btn = document.getElementById("eqf-doc-btn");
+  btn.disabled = true;
+  status.textContent = "Enviando...";
+  try {
+    await enviarDocEquip(mestreId, tipo, referencia, file, (n, total) => { status.textContent = `Enviando... ${Math.round(n / total * 100)}%`; });
+    const m = MESTRE.find(x => x.id === mestreId) || {};
+    emitirHistorico([{ dominio: "equip", chave: histChave("equip", m), nome: histNome("equip", m), tipo: "Documento",
+      de: m.ultimaObra || "", para: m.ultimaObra || "", detalhe: `${DOC_TIPOS[tipo]}${referencia ? " " + mesLegivel(referencia) : ""} anexado: ${file.name}`, origem: "Ficha do equipamento" }]);
+    toast(`${DOC_TIPOS[tipo]} anexado.`);
+    renderEquipListaMestre();
+  } catch (err) {
+    console.error(err);
+    toast("Não consegui enviar o arquivo: " + err.message, true);
+  } finally {
+    btn.disabled = false;
+    status.textContent = "";
+    renderDocsModal();
+  }
+});
+document.getElementById("eqf-docs-lista").addEventListener("click", async (e) => {
+  const abrir = e.target.closest("[data-doc-abrir]");
+  const del = e.target.closest("[data-doc-del]");
+  const d = DOCS_EQUIP.find(x => x.id === (abrir?.dataset.docAbrir || del?.dataset.docDel));
+  if (!d) return;
+  e.preventDefault();
+  if (abrir) {
+    // abre a janela já no clique (o navegador bloqueia janela aberta depois de esperar o download)
+    const podeVer = /^(application\/pdf|image\/)/.test(d.mime || "");
+    const janela = podeVer ? window.open("", "_blank") : null;
+    try {
+      const url = URL.createObjectURL(await baixarDocEquip(d));
+      if (janela) janela.location.href = url;
+      else {
+        const a = document.createElement("a");
+        a.href = url; a.download = d.nome;
+        document.body.appendChild(a); a.click(); a.remove();
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 120000);
+    } catch (err) {
+      if (janela) janela.close();
+      toast("Não consegui abrir o arquivo: " + err.message, true);
+    }
+    return;
+  }
+  if (!requireUnlock()) return;
+  if (!confirm(`Excluir o arquivo "${d.nome}"? Não tem como desfazer.`)) return;
+  try {
+    await apagarDocEquip(d);
+    const m = MESTRE.find(x => x.id === d.mestreId) || {};
+    emitirHistorico([{ dominio: "equip", chave: histChave("equip", m), nome: histNome("equip", m), tipo: "Documento",
+      de: m.ultimaObra || "", para: m.ultimaObra || "", detalhe: `${DOC_TIPOS[d.tipo] || "Arquivo"} excluído: ${d.nome}`, origem: "Ficha do equipamento" }]);
+    toast("Arquivo excluído.");
+    renderEquipListaMestre();
+  } catch (err) {
+    toast("Não consegui excluir: " + err.message, true);
+  }
+  renderDocsModal();
 });
 
 /* -------------------------------------------------------------------------
@@ -4263,6 +4488,7 @@ function openEquipModal(item) {
   f("eqf-obs").value = item?.obs || "";
   renderManutItens(item?.manutencaoItens);
   toggleEquipManutencaoBox();
+  renderDocsModal();
   document.getElementById("modal-equip").classList.add("open");
 }
 
@@ -5281,7 +5507,7 @@ function histDataHora(ts) {
   const d = new Date(ts);
   return d.toLocaleDateString("pt-BR") + " " + d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }
-const HIST_TIPO_COR = { "Entrada": "st-mob", "Saída": "st-saida", "Exclusão": "st-saida", "Transferência": "st-ferias", "Alteração": "st-outro", "Obra renomeada": "st-afastado", "Obra excluída": "st-saida" };
+const HIST_TIPO_COR = { "Entrada": "st-mob", "Saída": "st-saida", "Exclusão": "st-saida", "Transferência": "st-ferias", "Alteração": "st-outro", "Obra renomeada": "st-afastado", "Obra excluída": "st-saida", "Documento": "st-mob" };
 function histBadge(tipo) { return `<span class="badge ${HIST_TIPO_COR[tipo] || "st-outro"}">${escapeHtml(tipo)}</span>`; }
 function histDominioIcone(d) { return d === "equip" ? "🚜" : "👷"; }
 
