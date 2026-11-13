@@ -330,6 +330,7 @@
 
   @media (max-width:640px){
     main{padding:16px;}
+    .modal-foot{flex-wrap:wrap;}
     .form-grid{grid-template-columns:1fr;}
     header{padding:12px 16px;}
     .brand .setor-anim{padding-left:8px;margin-left:2px;}
@@ -953,6 +954,25 @@ try { if (localStorage.getItem("ctrlTema") === "escuro") { document.getElementBy
         <div class="field full">
           <label>Observação</label>
           <textarea id="w-obs"></textarea>
+        </div>
+        <div class="field full" id="w-docs-box">
+          <label>Documentos (ASO, treinamentos, carteira de trabalho)</label>
+          <div id="w-docs-lista" style="margin-bottom:8px;"></div>
+          <div id="w-docs-form" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            <select id="w-doc-tipo" style="width:auto;">
+              <option value="aso">ASO</option>
+              <option value="treinamento">Treinamento</option>
+              <option value="carteira">Carteira de trabalho</option>
+              <option value="outro">Outro</option>
+            </select>
+            <input type="text" id="w-doc-desc" style="width:auto;flex:1 1 160px;">
+            <label id="w-doc-validade-box" style="display:inline-flex;align-items:center;gap:6px;margin:0;font-weight:500;">Validade
+              <input type="date" id="w-doc-validade" style="width:auto;"></label>
+            <input type="file" id="w-doc-input" accept=".pdf,.jpg,.jpeg,.png,.webp,.xlsx,.xls,.doc,.docx" style="display:none;">
+            <button type="button" class="btn btn-ghost btn-sm" id="w-doc-btn">📎 Anexar arquivo</button>
+            <span id="w-doc-status" style="font-size:.74rem;color:var(--text-dim);"></span>
+          </div>
+          <div id="w-docs-novo" style="display:none;font-size:.76rem;color:var(--text-dim);">Salve o colaborador primeiro para anexar documentos.</div>
         </div>
       </div>
     </div>
@@ -2013,6 +2033,7 @@ async function reload() {
     STATE = lsRead(LS_KEY, "colaboradores");
   }
   renderAll();
+  carregarDocs(DS_MO).then(renderConsolidado).catch(e => console.warn("Documentos dos colaboradores:", e));
   if (pendingFolhaRegistros) {
     try { renderCruzamento(computeCruzamento(pendingFolhaRegistros, folhaObraMap)); } catch (e) { console.warn("Não consegui atualizar o cruzamento:", e); }
   }
@@ -2500,7 +2521,7 @@ function renderConsolidado() {
   document.getElementById("cons-count").textContent = `${list.length} de ${STATE.colaboradores.length} colaborador(es)`;
   const rows = list.map(w => `
     <tr>
-      <td data-label="Nome"><div class="name-cell"><div class="avatar">${initials(w.nome)}</div>${escapeHtml(w.nome)}</div></td>
+      <td data-label="Nome"><div class="name-cell"><div class="avatar">${initials(w.nome)}</div>${escapeHtml(w.nome)}${(r => r.n ? ` <span class="muted" style="font-size:.7rem;cursor:pointer;white-space:nowrap;" title="Ver documentos" data-edit="${w.id}" data-wdocs="1">📎 ${r.n}${r.vencidos ? ` <span class="badge st-saida" data-edit="${w.id}" data-wdocs="1">${r.vencidos} vencido(s)</span>` : r.vencendo ? ` <span class="badge st-afastado" data-edit="${w.id}" data-wdocs="1">vence em breve</span>` : ""}</span>` : "")(resumoDocsPessoa(histChave("mo", w)))}</div></td>
       <td data-label="Obra"><span class="obra-tag">${escapeHtml(w.obra || "—")}</span></td>
       <td data-label="Local" class="muted">${escapeHtml(w.local || "—")}</td>
       <td data-label="Função">${escapeHtml(w.funcao || "—")}</td>
@@ -3038,7 +3059,7 @@ function renderEquipListaMestre() {
   const data = (ts) => ts ? new Date(ts).toLocaleDateString("pt-BR") : "";
   const rows = linhas.map(({ m, a, w }) => `
     <tr>
-      <td data-label="Equipamento"><strong>${a?.temFoto ? "📷 " : ""}${escapeHtml(w.tipo || "—")}</strong>${(n => n ? ` <span class="muted" style="font-size:.7rem;cursor:pointer;" title="Ver contrato e medições" data-mestre-edit="${m.id}" data-mestre-docs="1">📎 ${n}</span>` : "")(DOCS_EQUIP.filter(d => d.mestreId === m.id).length)}<div class="muted" style="font-size:.72rem;">${escapeHtml([w.marca, w.modelo].filter(Boolean).join(" ")) || "—"}</div></td>
+      <td data-label="Equipamento"><strong>${a?.temFoto ? "📷 " : ""}${escapeHtml(w.tipo || "—")}</strong>${(n => n ? ` <span class="muted" style="font-size:.7rem;cursor:pointer;" title="Ver contrato e medições" data-mestre-edit="${m.id}" data-mestre-docs="1">📎 ${n}</span>` : "")(DS_EQ.itens.filter(d => d.mestreId === m.id).length)}<div class="muted" style="font-size:.72rem;">${escapeHtml([w.marca, w.modelo].filter(Boolean).join(" ")) || "—"}</div></td>
       <td data-label="Código" class="muted">${escapeHtml(idValido(w.tag) ? w.tag : idValido(w.placa) ? w.placa : idValido(w.chassis) ? w.chassis : "—")}</td>
       <td data-label="Categoria" class="muted">${escapeHtml(inferCategoriaEquip(w.tipo))}</td>
       <td data-label="Status">${a ? `<span class="badge ${equipStatusClass(a.situacao)}">${escapeHtml(a.situacao || "—")}</span>` : `<span class="badge st-outro">FORA DAS OBRAS</span>`}</td>
@@ -3115,30 +3136,26 @@ document.getElementById("equip-lista-table").addEventListener("click", async (e)
    "equipamentosDocsPartes" o conteúdo (base64, até ~700 KB por documento).
    A ficha só é gravada depois de todas as partes, para não listar envio pela metade.
    ------------------------------------------------------------------------- */
-const DOCS_COL = "equipamentosDocs";
-const DOCS_PARTES_COL = "equipamentosDocsPartes";
-const LS_KEY_DOCS = "consolidadoEquipamentosDocs";
 const DOC_PARTE_CHARS = 700000;
 const DOC_MAX_MB = 15;
-const DOC_TIPOS = { contrato: "Contrato", medicao: "Medição" };
-let DOCS_EQUIP = []; // fichas dos arquivos (sem o conteúdo)
+const DOC_TIPOS = { contrato: "Contrato", medicao: "Medição", aso: "ASO", treinamento: "Treinamento", carteira: "Carteira de trabalho", outro: "Outro" };
+// Um "depósito" de arquivos por cadastro: equipamentos (contrato/medições) e colaboradores (ASO, treinamentos, carteira).
+function criarDepositoDocs(col, partesCol, lsKey) { return { col, partesCol, lsKey, itens: [], carregado: false }; }
+const DS_EQ = criarDepositoDocs("equipamentosDocs", "equipamentosDocsPartes", "consolidadoEquipamentosDocs");
+const DS_MO = criarDepositoDocs("colaboradoresDocs", "colaboradoresDocsPartes", "consolidadoColaboradoresDocs");
 
-function lsDocs() {
-  try { return JSON.parse(localStorage.getItem(LS_KEY_DOCS) || '{"docs":{},"partes":{}}'); } catch (e) { return { docs: {}, partes: {} }; }
+function lsDocs(ds) {
+  try { return JSON.parse(localStorage.getItem(ds.lsKey) || '{"docs":{},"partes":{}}'); } catch (e) { return { docs: {}, partes: {} }; }
 }
 
-async function carregarDocsEquip() {
+async function carregarDocs(ds) {
   if (useFirebase) {
-    const snap = await withTimeout(() => fs.getDocs(fs.collection(db, DOCS_COL)));
-    DOCS_EQUIP = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const snap = await withTimeout(() => fs.getDocs(fs.collection(db, ds.col)));
+    ds.itens = snap.docs.map(d => ({ id: d.id, ...d.data() }));
   } else {
-    DOCS_EQUIP = Object.entries(lsDocs().docs).map(([id, v]) => ({ id, ...v }));
+    ds.itens = Object.entries(lsDocs(ds).docs).map(([id, v]) => ({ id, ...v }));
   }
-}
-
-function docsDoMestre(mestreId) {
-  return DOCS_EQUIP.filter(d => d.mestreId === mestreId)
-    .sort((a, b) => (a.tipo === b.tipo ? 0 : a.tipo === "contrato" ? -1 : 1) || (b.referencia || "").localeCompare(a.referencia || "") || b.enviadoEm - a.enviadoEm);
+  ds.carregado = true;
 }
 
 function lerArquivoBase64(file) {
@@ -3150,37 +3167,38 @@ function lerArquivoBase64(file) {
   });
 }
 
-async function enviarDocEquip(mestreId, tipo, referencia, file, aoProgredir) {
+// dono = campos que ligam o arquivo ao cadastro (ex.: { mestreId } ou { pessoaChave, pessoaNome }) + tipo/referência
+async function enviarDoc(ds, dono, file, aoProgredir) {
   const b64 = await lerArquivoBase64(file);
   const partes = [];
   for (let i = 0; i < b64.length; i += DOC_PARTE_CHARS) partes.push(b64.slice(i, i + DOC_PARTE_CHARS));
-  const ficha = { mestreId, tipo, referencia: referencia || "", nome: file.name, mime: file.type || "application/octet-stream",
+  const ficha = { referencia: "", ...dono, nome: file.name, mime: file.type || "application/octet-stream",
                   tamanho: file.size, partes: partes.length, enviadoEm: Date.now(), autor: getAutorHist() };
   if (useFirebase) {
-    const id = fs.doc(fs.collection(db, DOCS_COL)).id;
+    const id = fs.doc(fs.collection(db, ds.col)).id;
     for (let i = 0; i < partes.length; i++) {
-      await withTimeout(() => fs.setDoc(fs.doc(db, DOCS_PARTES_COL, `${id}_${i}`), { docId: id, i, dados: partes[i] }), 60000);
+      await withTimeout(() => fs.setDoc(fs.doc(db, ds.partesCol, `${id}_${i}`), { docId: id, i, dados: partes[i] }), 60000);
       aoProgredir?.(i + 1, partes.length);
     }
-    await withTimeout(() => fs.setDoc(fs.doc(db, DOCS_COL, id), ficha));
-    DOCS_EQUIP.push({ id, ...ficha });
+    await withTimeout(() => fs.setDoc(fs.doc(db, ds.col, id), ficha));
+    ds.itens.push({ id, ...ficha });
   } else {
     const id = cryptoId();
-    const st = lsDocs();
+    const st = lsDocs(ds);
     partes.forEach((p, i) => { st.partes[`${id}_${i}`] = p; });
     st.docs[id] = ficha;
-    localStorage.setItem(LS_KEY_DOCS, JSON.stringify(st)); // pode estourar o limite do navegador com arquivos grandes
-    DOCS_EQUIP.push({ id, ...ficha });
+    localStorage.setItem(ds.lsKey, JSON.stringify(st)); // pode estourar o limite do navegador com arquivos grandes
+    ds.itens.push({ id, ...ficha });
   }
 }
 
-async function baixarDocEquip(d) {
+async function baixarDoc(ds, d) {
   let b64 = "";
   if (useFirebase) {
-    const snap = await withTimeout(() => fs.getDocs(fs.query(fs.collection(db, DOCS_PARTES_COL), fs.where("docId", "==", d.id))), 60000);
+    const snap = await withTimeout(() => fs.getDocs(fs.query(fs.collection(db, ds.partesCol), fs.where("docId", "==", d.id))), 60000);
     b64 = snap.docs.map(x => x.data()).sort((a, b) => a.i - b.i).map(x => x.dados).join("");
   } else {
-    const st = lsDocs();
+    const st = lsDocs(ds);
     for (let i = 0; i < d.partes; i++) b64 += st.partes[`${d.id}_${i}`] || "";
   }
   const bin = atob(b64);
@@ -3189,21 +3207,65 @@ async function baixarDocEquip(d) {
   return new Blob([bytes], { type: d.mime || "application/octet-stream" });
 }
 
-async function apagarDocEquip(d) {
+async function apagarDoc(ds, d) {
   if (useFirebase) {
     await withTimeout(async () => {
-      await fs.deleteDoc(fs.doc(db, DOCS_COL, d.id)); // a ficha primeiro: some da lista mesmo se faltar apagar alguma parte
+      await fs.deleteDoc(fs.doc(db, ds.col, d.id)); // a ficha primeiro: some da lista mesmo se faltar apagar alguma parte
       const batch = fs.writeBatch(db);
-      for (let i = 0; i < (d.partes || 0); i++) batch.delete(fs.doc(db, DOCS_PARTES_COL, `${d.id}_${i}`));
+      for (let i = 0; i < (d.partes || 0); i++) batch.delete(fs.doc(db, ds.partesCol, `${d.id}_${i}`));
       await batch.commit();
     }, 30000);
   } else {
-    const st = lsDocs();
+    const st = lsDocs(ds);
     delete st.docs[d.id];
     for (let i = 0; i < (d.partes || 0); i++) delete st.partes[`${d.id}_${i}`];
-    localStorage.setItem(LS_KEY_DOCS, JSON.stringify(st));
+    localStorage.setItem(ds.lsKey, JSON.stringify(st));
   }
-  DOCS_EQUIP = DOCS_EQUIP.filter(x => x.id !== d.id);
+  ds.itens = ds.itens.filter(x => x.id !== d.id);
+}
+
+async function atualizarFichasDocs(ds, ids, dados) { // merge de campos nas fichas (ex.: colaborador renomeado)
+  if (!ids.length) return;
+  if (useFirebase) {
+    await withTimeout(async () => {
+      const batch = fs.writeBatch(db);
+      ids.forEach(id => batch.set(fs.doc(db, ds.col, id), dados, { merge: true }));
+      await batch.commit();
+    });
+  } else {
+    const st = lsDocs(ds);
+    ids.forEach(id => { if (st.docs[id]) Object.assign(st.docs[id], dados); });
+    localStorage.setItem(ds.lsKey, JSON.stringify(st));
+  }
+  ds.itens.forEach(d => { if (ids.includes(d.id)) Object.assign(d, dados); });
+}
+
+// abre PDF/imagem numa aba nova; o resto baixa. A janela é aberta já no clique (senão o navegador bloqueia).
+async function abrirDoc(ds, d) {
+  const podeVer = /^(application\/pdf|image\/)/.test(d.mime || "");
+  const janela = podeVer ? window.open("", "_blank") : null;
+  try {
+    const url = URL.createObjectURL(await baixarDoc(ds, d));
+    if (janela) janela.location.href = url;
+    else {
+      const a = document.createElement("a");
+      a.href = url; a.download = d.nome;
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 120000);
+  } catch (err) {
+    if (janela) janela.close();
+    toast("Não consegui abrir o arquivo: " + err.message, true);
+  }
+}
+
+const carregarDocsEquip = () => carregarDocs(DS_EQ);
+const enviarDocEquip = (mestreId, tipo, referencia, file, aoProgredir) => enviarDoc(DS_EQ, { mestreId, tipo, referencia: referencia || "" }, file, aoProgredir);
+const apagarDocEquip = (d) => apagarDoc(DS_EQ, d);
+
+function docsDoMestre(mestreId) {
+  return DS_EQ.itens.filter(d => d.mestreId === mestreId)
+    .sort((a, b) => (a.tipo === b.tipo ? 0 : a.tipo === "contrato" ? -1 : 1) || (b.referencia || "").localeCompare(a.referencia || "") || b.enviadoEm - a.enviadoEm);
 }
 
 function tamanhoLegivel(n) {
@@ -3279,26 +3341,11 @@ document.getElementById("eqf-doc-input").addEventListener("change", async (e) =>
 document.getElementById("eqf-docs-lista").addEventListener("click", async (e) => {
   const abrir = e.target.closest("[data-doc-abrir]");
   const del = e.target.closest("[data-doc-del]");
-  const d = DOCS_EQUIP.find(x => x.id === (abrir?.dataset.docAbrir || del?.dataset.docDel));
+  const d = DS_EQ.itens.find(x => x.id === (abrir?.dataset.docAbrir || del?.dataset.docDel));
   if (!d) return;
   e.preventDefault();
   if (abrir) {
-    // abre a janela já no clique (o navegador bloqueia janela aberta depois de esperar o download)
-    const podeVer = /^(application\/pdf|image\/)/.test(d.mime || "");
-    const janela = podeVer ? window.open("", "_blank") : null;
-    try {
-      const url = URL.createObjectURL(await baixarDocEquip(d));
-      if (janela) janela.location.href = url;
-      else {
-        const a = document.createElement("a");
-        a.href = url; a.download = d.nome;
-        document.body.appendChild(a); a.click(); a.remove();
-      }
-      setTimeout(() => URL.revokeObjectURL(url), 120000);
-    } catch (err) {
-      if (janela) janela.close();
-      toast("Não consegui abrir o arquivo: " + err.message, true);
-    }
+    abrirDoc(DS_EQ, d);
     return;
   }
   if (!requireUnlock()) return;
@@ -3314,6 +3361,133 @@ document.getElementById("eqf-docs-lista").addEventListener("click", async (e) =>
     toast("Não consegui excluir: " + err.message, true);
   }
   renderDocsModal();
+});
+
+/* -------------------------------------------------------------------------
+   MÃO DE OBRA — DOCUMENTOS DO COLABORADOR (ASO, treinamentos, carteira...)
+   Ficam ligados ao NOME da pessoa (a importação semanal recria os registros
+   com ids novos), em "colaboradoresDocs" + "colaboradoresDocsPartes".
+   ------------------------------------------------------------------------- */
+const DOC_TIPOS_MO = ["aso", "treinamento", "carteira", "outro"];
+
+function docsDaPessoa(chave) {
+  const ordem = (t) => DOC_TIPOS_MO.indexOf(t);
+  return DS_MO.itens.filter(d => d.pessoaChave === chave)
+    .sort((a, b) => ordem(a.tipo) - ordem(b.tipo) || (b.validade || "").localeCompare(a.validade || "") || b.enviadoEm - a.enviadoEm);
+}
+
+// "vencido", "vence" (próximos 30 dias) ou "" — compara datas aaaa-mm-dd
+function situacaoValidade(validade) {
+  if (!validade) return "";
+  const hoje = new Date().toISOString().slice(0, 10);
+  const em30 = new Date(Date.now() + 30 * 86400000).toISOString().slice(0, 10);
+  return validade < hoje ? "vencido" : validade <= em30 ? "vence" : "";
+}
+function dataBR(iso) { const [a, m, d] = (iso || "").split("-"); return a && m && d ? `${d}/${m}/${a}` : ""; }
+
+function resumoDocsPessoa(chave) {
+  const docs = docsDaPessoa(chave);
+  return { n: docs.length, vencidos: docs.filter(d => situacaoValidade(d.validade) === "vencido").length,
+           vencendo: docs.filter(d => situacaoValidade(d.validade) === "vence").length };
+}
+
+// Colaborador aberto no modal (null = novo, ainda não salvo)
+function pessoaDoModal() {
+  const id = document.getElementById("modal-worker").dataset.editId;
+  return id ? STATE.colaboradores.find(c => c.id === id) || null : null;
+}
+
+async function renderDocsWorker() {
+  const w = pessoaDoModal();
+  document.getElementById("w-docs-form").style.display = w ? "flex" : "none";
+  document.getElementById("w-docs-novo").style.display = w ? "none" : "";
+  const listaEl = document.getElementById("w-docs-lista");
+  if (!w) { listaEl.innerHTML = ""; return; }
+  if (!DS_MO.carregado) {
+    listaEl.innerHTML = `<div class="muted" style="font-size:.76rem;">Carregando documentos...</div>`;
+    try { await carregarDocs(DS_MO); } catch (err) { listaEl.innerHTML = `<div class="muted" style="font-size:.76rem;">Não consegui carregar os documentos: ${escapeHtml(err.message)}</div>`; return; }
+    if (pessoaDoModal() !== w) return;
+  }
+  const lista = docsDaPessoa(histChave("mo", w));
+  listaEl.innerHTML = lista.length ? lista.map(d => {
+    const sit = situacaoValidade(d.validade);
+    const val = d.validade ? `<span class="badge ${sit === "vencido" ? "st-saida" : sit === "vence" ? "st-afastado" : "st-outro"}" title="Validade">${sit === "vencido" ? "vencido " : "vence "}${dataBR(d.validade)}</span>` : "";
+    return `
+    <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px 8px;padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem;">
+      <span class="badge ${d.tipo === "aso" ? "st-mob" : d.tipo === "treinamento" ? "st-ferias" : "st-outro"}">${escapeHtml(DOC_TIPOS[d.tipo] || "Arquivo")}</span>
+      <a href="#" data-wdoc-abrir="${d.id}" style="flex:1 1 140px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:inherit;font-weight:600;" title="Abrir / baixar">${escapeHtml(d.referencia ? d.referencia + " — " + d.nome : d.nome)}</a>
+      ${val}
+      <span class="muted" style="font-size:.7rem;">${tamanhoLegivel(d.tamanho || 0)} · ${new Date(d.enviadoEm).toLocaleDateString("pt-BR")}${d.autor ? " · " + escapeHtml(d.autor) : ""}</span>
+      <button type="button" class="icon-btn del" title="Excluir arquivo" data-wdoc-del="${d.id}">✕</button>
+    </div>`;
+  }).join("") : `<div class="muted" style="font-size:.76rem;">Nenhum documento anexado.</div>`;
+}
+
+function wDocTipoMudou() {
+  const tipo = document.getElementById("w-doc-tipo").value;
+  const desc = document.getElementById("w-doc-desc");
+  desc.style.display = tipo === "carteira" ? "none" : "";
+  desc.placeholder = tipo === "treinamento" ? "Qual treinamento (ex.: NR-35)" : tipo === "aso" ? "Tipo (admissional, periódico...)" : "Descrição";
+  document.getElementById("w-doc-validade-box").style.display = tipo === "carteira" ? "none" : "";
+}
+document.getElementById("w-doc-tipo").addEventListener("change", wDocTipoMudou);
+wDocTipoMudou();
+
+document.getElementById("w-doc-btn").addEventListener("click", () => {
+  if (!requireUnlock()) return;
+  document.getElementById("w-doc-input").click();
+});
+document.getElementById("w-doc-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  const w = pessoaDoModal();
+  if (!file || !w) return;
+  if (file.size > DOC_MAX_MB * 1048576) { toast(`Arquivo muito grande (${tamanhoLegivel(file.size)}). O limite é ${DOC_MAX_MB} MB — reduza o PDF e tente de novo.`, true); return; }
+  const tipo = document.getElementById("w-doc-tipo").value;
+  const referencia = tipo === "carteira" ? "" : document.getElementById("w-doc-desc").value.trim();
+  const validade = tipo === "carteira" ? "" : document.getElementById("w-doc-validade").value;
+  const status = document.getElementById("w-doc-status");
+  const btn = document.getElementById("w-doc-btn");
+  btn.disabled = true;
+  status.textContent = "Enviando...";
+  try {
+    await enviarDoc(DS_MO, { pessoaChave: histChave("mo", w), pessoaNome: w.nome, tipo, referencia, validade }, file,
+      (n, total) => { status.textContent = `Enviando... ${Math.round(n / total * 100)}%`; });
+    emitirHistorico([{ dominio: "mo", chave: histChave("mo", w), nome: w.nome, tipo: "Documento", de: w.obra || "", para: w.obra || "",
+      detalhe: `${DOC_TIPOS[tipo]}${referencia ? " " + referencia : ""}${validade ? " (validade " + dataBR(validade) + ")" : ""} anexado: ${file.name}`, origem: "Cadastro do colaborador" }]);
+    toast(`${DOC_TIPOS[tipo]} anexado.`);
+    document.getElementById("w-doc-desc").value = "";
+    document.getElementById("w-doc-validade").value = "";
+    renderConsolidado();
+  } catch (err) {
+    console.error(err);
+    toast("Não consegui enviar o arquivo: " + err.message, true);
+  } finally {
+    btn.disabled = false;
+    status.textContent = "";
+    renderDocsWorker();
+  }
+});
+document.getElementById("w-docs-lista").addEventListener("click", async (e) => {
+  const abrir = e.target.closest("[data-wdoc-abrir]");
+  const del = e.target.closest("[data-wdoc-del]");
+  const d = DS_MO.itens.find(x => x.id === (abrir?.dataset.wdocAbrir || del?.dataset.wdocDel));
+  if (!d) return;
+  e.preventDefault();
+  if (abrir) { abrirDoc(DS_MO, d); return; }
+  if (!requireUnlock()) return;
+  if (!confirm(`Excluir o arquivo "${d.nome}"? Não tem como desfazer.`)) return;
+  try {
+    await apagarDoc(DS_MO, d);
+    const w = pessoaDoModal() || {};
+    emitirHistorico([{ dominio: "mo", chave: d.pessoaChave, nome: d.pessoaNome || w.nome || "", tipo: "Documento", de: w.obra || "", para: w.obra || "",
+      detalhe: `${DOC_TIPOS[d.tipo] || "Arquivo"} excluído: ${d.nome}`, origem: "Cadastro do colaborador" }]);
+    toast("Arquivo excluído.");
+    renderConsolidado();
+  } catch (err) {
+    toast("Não consegui excluir: " + err.message, true);
+  }
+  renderDocsWorker();
 });
 
 /* -------------------------------------------------------------------------
@@ -5415,6 +5589,7 @@ function openWorkerModal(worker) {
   document.getElementById("modal-worker").dataset.editId = worker?.id || "";
   document.getElementById("btn-delete-worker").style.display = worker?.id ? "" : "none";
   document.getElementById("btn-hist-worker").style.display = worker?.id ? "" : "none";
+  renderDocsWorker();
   document.getElementById("modal-worker").classList.add("open");
 }
 
@@ -5444,7 +5619,13 @@ document.getElementById("btn-save-worker").addEventListener("click", async () =>
     cod: f("w-cod"), admissao: f("w-admissao"), fornecedor: f("w-fornecedor"),
     sieng: f("w-sieng"), frente: f("w-frente"), status: f("w-status"), obs: f("w-obs")
   };
+  const anterior = editId ? STATE.colaboradores.find(c => c.id === editId) : null;
   await Store.saveItem(rec);
+  if (anterior && histChave("mo", anterior) !== histChave("mo", rec)) {
+    const ids = DS_MO.itens.filter(d => d.pessoaChave === histChave("mo", anterior)).map(d => d.id);
+    try { await atualizarFichasDocs(DS_MO, ids, { pessoaChave: histChave("mo", rec), pessoaNome: rec.nome }); }
+    catch (e) { toast("Nome alterado, mas não consegui mover os documentos: " + e.message, true); }
+  }
   closeModals();
   toast(editId ? "Colaborador atualizado." : "Colaborador adicionado.");
   await reload();
@@ -5456,6 +5637,7 @@ document.getElementById("cons-table").addEventListener("click", async (e) => {
   if (editId) {
     const worker = STATE.colaboradores.find(w => w.id === editId);
     if (worker) openWorkerModal(worker);
+    if (worker && e.target.dataset.wdocs) setTimeout(() => document.getElementById("w-docs-box").scrollIntoView({ block: "center" }), 50);
   } else if (delId) {
     if (!requireUnlock()) return;
     if (confirm("Excluir este colaborador do consolidado?")) {
